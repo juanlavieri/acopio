@@ -1,0 +1,1 @@
+"""Acopio backend application package."""

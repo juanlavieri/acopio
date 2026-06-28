@@ -1,0 +1,14 @@
+{
+  "name": "Acopio — Relief Inventory",
+  "short_name": "Acopio",
+  "description": "Smart inventory for humanitarian relief collection centers.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0f766e",
+  "theme_color": "#0f766e",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

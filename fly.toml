@@ -1,0 +1,39 @@
+# Fly.io deployment. Public URL: https://<app>.fly.dev (no domain needed).
+# Uses the repo Dockerfile. Persistence: SQLite on a Fly volume at /app/data.
+
+app = "acopio-curacao"
+primary_region = "iad"   # Ashburn US-East — closest available to the Caribbean
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8000"
+  DATA_DIR = "/app/data"
+  DEFAULT_COUNTRY = "Curacao"
+  DEFAULT_REGION = "Curacao"
+  DEFAULT_CENTER = "Centro Principal"
+  OPENAI_MODEL = "gpt-4o-mini"
+
+# Persistent disk for the SQLite database + librarian vector cache.
+[mounts]
+  source = "acopio_data"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "get"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

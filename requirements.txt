@@ -1,0 +1,25 @@
+# --- Acopio backend dependencies ---
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# Data / DB
+SQLAlchemy==2.0.36
+psycopg[binary]==3.2.13           # Postgres driver (Render Postgres in prod)
+
+# Settings / validation
+pydantic==2.10.4
+pydantic-settings==2.7.0
+email-validator==2.2.0
+
+# Librarian: our ingestion + normalization + semantic-search substrate.
+# Core is zero-dependency; we pull the extras we use (Excel/CSV/PDF/DOCX
+# readers + OpenAI embeddings).
+librarian-ai[documents,openai]==0.1.1
+
+# LLM (agent, normalization, Whisper voice transcription)
+openai==1.59.6
+
+# Excel/CSV parsing (also used directly for robust row extraction)
+openpyxl==3.1.5
