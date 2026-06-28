@@ -206,6 +206,42 @@ check("export items csv", r.status_code == 200 and r.text.startswith("item,categ
 r = c.get("/api/export/movements.csv", headers=H(vol))
 check("export movements csv", r.status_code == 200 and "date,type,item" in r.text)
 
+# --- re-upload dedup (sync mode, no double counting) --------------------
+def _qty(name):
+    items = c.get("/api/items", headers=H(vol), params={"q": name}).json()["items"]
+    m = [i for i in items if i["canonical_name"].lower() == name.lower()]
+    return m[0]["quantity"] if m else None
+
+
+va = b"Producto,Cantidad,Unidad\nAceite vegetal,100,litros\n"
+r = c.post("/api/uploads", headers=H(vol), files={"file": ("stock.csv", io.BytesIO(va), "text/csv")}, data={"mode": "sync"})
+check("sync upload v-a", r.status_code == 200 and r.json().get("result", {}).get("mode") == "sync")
+check("sync v-a sets qty 100", _qty("Aceite vegetal") == 100)
+
+# Updated version B of the SAME logical sheet (different content) → reconcile, not add.
+vb = b"Producto,Cantidad,Unidad\nAceite vegetal,140,litros\n"
+r = c.post("/api/uploads", headers=H(vol), files={"file": ("stock.csv", io.BytesIO(vb), "text/csv")}, data={"mode": "sync"})
+check("sync upload v-b", r.status_code == 200)
+check("sync v-b reconciles to 140 (no double count)", _qty("Aceite vegetal") == 140)
+
+# Re-uploading the EXACT same bytes is detected as a duplicate and skipped.
+r = c.post("/api/uploads", headers=H(vol), files={"file": ("stock.csv", io.BytesIO(vb), "text/csv")}, data={"mode": "sync"})
+check("identical re-upload flagged duplicate", r.json().get("duplicate") is True)
+check("duplicate did not change qty", _qty("Aceite vegetal") == 140)
+
+# Forcing re-import of the identical file is a no-op in sync mode (still 140).
+r = c.post("/api/uploads", headers=H(vol), files={"file": ("stock.csv", io.BytesIO(vb), "text/csv")}, data={"mode": "sync", "force": "true"})
+check("forced re-import processes", r.status_code == 200 and not r.json().get("duplicate"))
+check("forced sync still 140", _qty("Aceite vegetal") == 140)
+
+# barcode-based matching across uploads (name differs, code matches → same item)
+bc1 = b"Code,Item,Qty\nABC123,Guantes nitrilo,50\n"
+r = c.post("/api/uploads", headers=H(vol), files={"file": ("b1.csv", io.BytesIO(bc1), "text/csv")}, data={"mode": "sync"})
+check("barcode upload 1", r.status_code == 200)
+bc2 = b"Code,Item,Qty\nABC123,Guantes de nitrilo (caja),75\n"
+r = c.post("/api/uploads", headers=H(vol), files={"file": ("b2.csv", io.BytesIO(bc2), "text/csv")}, data={"mode": "sync"})
+check("barcode upload 2 matched same item", r.json()["result"]["created"] == 0 and r.json()["result"]["matched"] == 1)
+
 # --- auth enforced -------------------------------------------------------
 check("auth enforced", c.get("/api/items").status_code == 401)
 

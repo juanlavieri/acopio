@@ -1,6 +1,8 @@
 """Spreadsheet upload + normalization endpoint."""
 from __future__ import annotations
 
+import hashlib
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
@@ -17,26 +19,51 @@ router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 async def upload_file(
     file: UploadFile = File(...),
     center_id: str | None = Form(default=None),
+    mode: str = Form(default="add"),
+    force: bool = Form(default=False),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     data = await file.read()
     if not data:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Empty file.")
+    if mode not in {"add", "sync"}:
+        mode = "add"
 
     try:
         target_center = resolve_target_center(db, user, center_id)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
-    upload = Upload(user_id=user.id, filename=file.filename or "upload", status="processing")
+    content_hash = hashlib.sha256(data).hexdigest()
+
+    # Identical file already imported into this center? Skip unless forced.
+    if not force:
+        prev = (
+            db.query(Upload)
+            .filter(Upload.content_hash == content_hash, Upload.status == "done")
+            .order_by(Upload.created_at.desc())
+            .first()
+        )
+        if prev:
+            return {
+                "duplicate": True,
+                "previous": prev.public(),
+                "message": "This exact file was already imported.",
+            }
+
+    upload = Upload(
+        user_id=user.id, filename=file.filename or "upload", status="processing",
+        mode=mode, content_hash=content_hash,
+    )
     db.add(upload)
     db.commit()
     db.refresh(upload)
 
     try:
         result = normalize_upload(
-            db, upload=upload, filename=file.filename or "upload", data=data, user=user, center_id=target_center
+            db, upload=upload, filename=file.filename or "upload", data=data,
+            user=user, center_id=target_center, mode=mode,
         )
     except Exception as e:
         upload.status = "error"

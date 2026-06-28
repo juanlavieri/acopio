@@ -21,9 +21,10 @@ from .inventory import record_movement, resolve_or_create_item
 from .llm import get_llm
 
 # Canonical fields we try to recover from any spreadsheet.
-CANONICAL_FIELDS = ["name", "quantity", "unit", "category", "party", "location", "date", "notes"]
+CANONICAL_FIELDS = ["name", "quantity", "unit", "category", "party", "location", "date", "notes", "barcode"]
 
 _HEADER_HINTS: dict[str, list[str]] = {
+    "barcode": ["barcode", "codigo", "código", "code", "sku", "ref", "referencia", "id"],
     "name": ["item", "name", "descripcion", "description", "product", "producto", "articulo",
              "artículo", "insumo", "supply", "material", "donacion", "donación"],
     "quantity": ["qty", "quantity", "cantidad", "cant", "amount", "units", "unidades", "stock",
@@ -128,8 +129,10 @@ def _llm_mapping(llm, header: list[str], sample: list[list[str]]) -> dict[str, i
             "canonical schema. Given the header and sample rows, return JSON: "
             '{"name": <col index or null>, "quantity": <idx|null>, "unit": <idx|null>, '
             '"category": <idx|null>, "party": <idx|null>, "location": <idx|null>, '
-            '"date": <idx|null>, "notes": <idx|null>, "movement_type": "in"|"out"}. '
+            '"date": <idx|null>, "notes": <idx|null>, "barcode": <idx|null>, '
+            '"movement_type": "in"|"out"}. '
             "Column indices are 0-based. 'name' is the item description (required). "
+            "'barcode' is any stable code/SKU/reference id for the item. "
             "'party' is supplier/donor (for intake) or recipient (for dispatch)."
         ),
         user=f"Header (0-based): {list(enumerate(header))}\nSample rows:\n{sample_txt}",
@@ -163,88 +166,146 @@ def _cell(row: list[str], idx: int | None) -> str:
     return (row[idx] or "").strip()
 
 
+def _parse_date(val: str):
+    if not val:
+        return None
+    from datetime import date
+
+    s = str(val).strip()[:10]
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d", "%d-%m-%Y"):
+        try:
+            from datetime import datetime as _dt
+
+            return _dt.strptime(s, fmt).date()
+        except Exception:
+            continue
+    try:
+        return date.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _parse_grids(db, *, llm, grids, filename):
+    """Turn raw grids into normalized row dicts + the mapping used per sheet."""
+    rows_out: list[dict] = []
+    mappings_used: list[dict] = []
+    movement_type = "in"
+    for grid in grids:
+        header, rows = grid[0], grid[1:]
+        mapping = (_llm_mapping(llm, header, rows[:4]) if llm.enabled else None) or _heuristic_mapping(header)
+        mt = mapping.pop("_movement_type", "in") if isinstance(mapping, dict) else "in"
+        if mt in {"in", "out"}:
+            movement_type = mt
+        mappings_used.append(
+            {"header": header, "mapping": {k: (header[v] if isinstance(v, int) else None) for k, v in mapping.items()}}
+        )
+        for row in rows:
+            name = _cell(row, mapping.get("name"))
+            barcode = _cell(row, mapping.get("barcode"))
+            if not name and not barcode:
+                continue
+            rows_out.append({
+                "name": name or barcode,
+                "barcode": barcode,
+                "qty": _parse_qty(_cell(row, mapping.get("quantity"))),
+                "unit": _cell(row, mapping.get("unit")) or "unit",
+                "party": _cell(row, mapping.get("party")),
+                "location": _cell(row, mapping.get("location")),
+                "notes": _cell(row, mapping.get("notes")),
+                "cat_hint": _cell(row, mapping.get("category")),
+                "expiry": _parse_date(_cell(row, mapping.get("date"))),
+            })
+    return rows_out, mappings_used, movement_type
+
+
 # --- orchestration -------------------------------------------------------
-def normalize_upload(db: Session, *, upload, filename: str, data: bytes, user, center_id: str | None) -> dict:
-    """Parse, normalize, dedup and ingest a spreadsheet as intake movements."""
+def normalize_upload(
+    db: Session, *, upload, filename: str, data: bytes, user, center_id: str | None, mode: str = "add"
+) -> dict:
+    """Parse, normalize, dedup and ingest a spreadsheet.
+
+    mode="add"  → every row is a NEW arrival (additive intake movements).
+    mode="sync" → the sheet is the CURRENT full stock; the system matches each
+                  item and records only the DIFFERENCE (an adjustment), so
+                  re-uploading an updated version never double-counts.
+    """
     llm = get_llm()
     grids = extract_tables(filename, data)
     if not grids:
         raise ValueError("Could not find any tabular data in this file.")
 
-    total_rows = 0
+    parsed_rows, mappings_used, movement_type = _parse_grids(db, llm=llm, grids=grids, filename=filename)
     created = 0
     matched = 0
-    mappings_used: list[dict] = []
-    default_type = "in"
 
-    for grid in grids:
-        header, rows = grid[0], grid[1:]
-        mapping = None
-        if llm.enabled:
-            mapping = _llm_mapping(llm, header, rows[:4])
-        if not mapping:
-            mapping = _heuristic_mapping(header)
-        movement_type = mapping.pop("_movement_type", default_type) if isinstance(mapping, dict) else default_type
-        if movement_type not in {"in", "out"}:
-            movement_type = "in"
-
-        mappings_used.append(
-            {"header": header, "mapping": {k: (header[v] if isinstance(v, int) else None)
-                                            for k, v in mapping.items()}}
-        )
-
-        for row in rows:
-            name = _cell(row, mapping.get("name"))
-            if not name:
-                continue
-            total_rows += 1
-            qty = _parse_qty(_cell(row, mapping.get("quantity")))
-            unit = _cell(row, mapping.get("unit")) or "unit"
-            party = _cell(row, mapping.get("party"))
-            location = _cell(row, mapping.get("location"))
-            notes = _cell(row, mapping.get("notes"))
-            cat_hint = _cell(row, mapping.get("category"))
-
-            attributes = {}
-            if cat_hint:
-                attributes["source_category"] = cat_hint
-            if _cell(row, mapping.get("date")):
-                attributes["source_date"] = _cell(row, mapping.get("date"))
-
+    if mode == "sync":
+        # Aggregate target quantity per resolved item, then reconcile by delta.
+        targets: dict[str, dict] = {}
+        for r in parsed_rows:
             item, was_created = resolve_or_create_item(
-                db,
-                name=name,
-                user=user,
-                center_id=center_id,
-                unit=unit,
-                description=cat_hint,
-                attributes=attributes,
+                db, name=r["name"], user=user, center_id=center_id, unit=r["unit"],
+                description=r["cat_hint"], barcode=r["barcode"],
             )
             if was_created:
                 created += 1
             else:
                 matched += 1
+            agg = targets.setdefault(item.id, {"item": item, "target": 0.0, "unit": r["unit"],
+                                               "party": r["party"], "expiry": r["expiry"]})
+            agg["target"] += r["qty"]
+            if r["expiry"] and not agg["expiry"]:
+                agg["expiry"] = r["expiry"]
 
+        increased = decreased = unchanged = 0
+        for agg in targets.values():
+            item = agg["item"]
+            delta = round(agg["target"] - (item.quantity or 0.0), 4)
+            if abs(delta) < 1e-9:
+                unchanged += 1
+                continue
             record_movement(
-                db,
-                item=item,
-                type=movement_type,
-                quantity=qty,
-                user=user,
-                unit=unit,
-                party=party,
-                location=location,
-                note=(notes + (f" (import: {filename})" if not notes else "")) or f"Imported from {filename}",
-                source="upload",
+                db, item=item, type="adjust", quantity=delta, user=user, unit=agg["unit"],
+                party=agg["party"], reason="reconciliation",
+                expiry_date=agg["expiry"] if delta > 0 else None,
+                note=f"Sync import: {filename} (set to {agg['target']:g})", source="upload",
             )
+            if delta > 0:
+                increased += 1
+            else:
+                decreased += 1
 
-    # Optional LLM summary of what landed.
-    summary = f"Imported {total_rows} rows: {created} new items, {matched} merged into existing items."
-    upload.rows_detected = total_rows
+        total_items = len(targets)
+        summary = (
+            f"Synced {total_items} items from {len(parsed_rows)} rows: "
+            f"{created} new, {increased} increased, {decreased} reduced, {unchanged} unchanged."
+        )
+        result = {"rows": len(parsed_rows), "created": created, "matched": matched,
+                  "increased": increased, "decreased": decreased, "unchanged": unchanged,
+                  "mode": "sync", "summary": summary}
+    else:
+        for r in parsed_rows:
+            attributes = {}
+            if r["cat_hint"]:
+                attributes["source_category"] = r["cat_hint"]
+            item, was_created = resolve_or_create_item(
+                db, name=r["name"], user=user, center_id=center_id, unit=r["unit"],
+                description=r["cat_hint"], attributes=attributes, barcode=r["barcode"],
+            )
+            created += 1 if was_created else 0
+            matched += 0 if was_created else 1
+            record_movement(
+                db, item=item, type=movement_type, quantity=r["qty"], user=user, unit=r["unit"],
+                party=r["party"], location=r["location"], expiry_date=r["expiry"], reason="donation",
+                note=(r["notes"] or f"Imported from {filename}"), source="upload",
+            )
+        summary = f"Imported {len(parsed_rows)} rows: {created} new items, {matched} merged into existing items."
+        result = {"rows": len(parsed_rows), "created": created, "matched": matched, "mode": "add", "summary": summary}
+
+    upload.rows_detected = result["rows"]
     upload.items_created = created
     upload.items_matched = matched
     upload.mapping = {"sheets": mappings_used}
     upload.summary = summary
     upload.status = "done"
     db.commit()
-    return {"rows": total_rows, "created": created, "matched": matched, "summary": summary}
+    return result

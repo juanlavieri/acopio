@@ -275,6 +275,10 @@ class Upload(Base):
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     filename: Mapped[str] = mapped_column(String, default="")
     status: Mapped[str] = mapped_column(String, default="pending")  # pending|processing|done|error
+    # "add" = each row is a new arrival; "sync" = sheet is the full current stock.
+    mode: Mapped[str] = mapped_column(String, default="add")
+    # SHA-256 of the uploaded bytes, to detect identical re-uploads.
+    content_hash: Mapped[str] = mapped_column(String, default="", index=True)
     rows_detected: Mapped[int] = mapped_column(Integer, default=0)
     items_created: Mapped[int] = mapped_column(Integer, default=0)
     items_matched: Mapped[int] = mapped_column(Integer, default=0)
@@ -290,6 +294,7 @@ class Upload(Base):
             "id": self.id,
             "filename": self.filename,
             "status": self.status,
+            "mode": self.mode or "add",
             "rows_detected": self.rows_detected,
             "items_created": self.items_created,
             "items_matched": self.items_matched,

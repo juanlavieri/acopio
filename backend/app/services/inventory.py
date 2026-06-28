@@ -110,14 +110,16 @@ def resolve_or_create_item(
     description: str = "",
     attributes: dict | None = None,
     category: Category | None = None,
+    barcode: str = "",
 ) -> tuple[Item, bool]:
     """Find an existing canonical item (within the same center) that means the
     same thing, or create one. Dedup is scoped per collection center.
 
-    Matching order: exact fingerprint → semantic nearest-neighbour above
-    threshold. Returns (item, created).
+    Matching order: barcode/code → exact normalized name → semantic
+    nearest-neighbour above threshold. Returns (item, created).
     """
     name = (name or "").strip()
+    barcode = (barcode or "").strip()
     fp = fingerprint(name)
     index = get_index()
 
@@ -126,23 +128,35 @@ def resolve_or_create_item(
         i.id for i in db.query(Item.id).filter(Item.center_id == center_id).all()
     } if center_id else None
 
-    # 1) exact normalized match within the center
-    if fp:
-        q = db.query(Item).filter(Item.fingerprint == fp)
+    # 1) barcode / code match within the center (strongest signal)
+    if barcode:
+        q = db.query(Item).filter(Item.barcode == barcode)
         if center_id:
             q = q.filter(Item.center_id == center_id)
         existing = q.first()
         if existing:
             return existing, False
 
-    # 2) semantic nearest neighbour within the center
+    # 2) exact normalized name match within the center
+    if fp:
+        q = db.query(Item).filter(Item.fingerprint == fp)
+        if center_id:
+            q = q.filter(Item.center_id == center_id)
+        existing = q.first()
+        if existing:
+            if barcode and not existing.barcode:
+                existing.barcode = barcode
+                db.commit()
+            return existing, False
+
+    # 3) semantic nearest neighbour within the center
     nid, score = index.nearest(name, allowed=center_item_ids)
     if nid and score >= _dedup_threshold():
         existing = db.get(Item, nid)
         if existing:
             return existing, False
 
-    # 3) create new canonical item
+    # 4) create new canonical item
     if category is None:
         category = categorize(db, name, description)
     item = Item(
@@ -151,6 +165,7 @@ def resolve_or_create_item(
         center_id=center_id,
         unit=unit or "unit",
         fingerprint=fp,
+        barcode=barcode,
         attributes=attributes or {},
         category_id=category.id if category else None,
         created_by=user.id if user else None,
@@ -211,11 +226,13 @@ def record_movement(
     )
     item.quantity = new_balance
 
-    # Batch tracking: intake creates a batch; dispatch/negative adjust deplete FEFO.
+    # Batch tracking: increases create a batch; decreases deplete FEFO.
     if type == "in":
         create_batch(db, item=item, qty=qty, expiry=expiry_date, lot=lot_code, party=party, user=user)
     elif type == "out":
         deplete_fefo(db, item=item, qty=qty)
+    elif type == "adjust" and signed > 0:
+        create_batch(db, item=item, qty=signed, expiry=expiry_date, lot=lot_code, party=party, user=user)
     elif type == "adjust" and signed < 0:
         deplete_fefo(db, item=item, qty=abs(signed))
 
