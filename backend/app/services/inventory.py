@@ -12,7 +12,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..auth import audit
-from ..models import Category, Item, Movement, User
+from ..models import Batch, Category, Item, Movement, User
 from .llm import get_llm
 from .semantic import get_index
 
@@ -229,17 +229,20 @@ def record_movement(
     )
     item.quantity = new_balance
 
-    # Batch tracking: increases create a batch; decreases deplete FEFO.
-    if type == "in":
-        create_batch(db, item=item, qty=qty, expiry=expiry_date, lot=lot_code, party=party, user=user)
-    elif type == "out":
-        deplete_fefo(db, item=item, qty=qty)
-    elif type == "adjust" and signed > 0:
-        create_batch(db, item=item, qty=signed, expiry=expiry_date, lot=lot_code, party=party, user=user)
-    elif type == "adjust" and signed < 0:
-        deplete_fefo(db, item=item, qty=abs(signed))
-
     db.add(mv)
+    db.flush()  # assign mv.id so batches can reference it
+
+    # Batch tracking: increases create a batch linked to this movement;
+    # decreases deplete FEFO and record which batches were consumed (for undo).
+    if type == "in":
+        create_batch(db, item=item, qty=qty, expiry=expiry_date, lot=lot_code, party=party, user=user, movement_id=mv.id)
+    elif type == "out":
+        mv.batch_refs = deplete_fefo(db, item=item, qty=qty)
+    elif type == "adjust" and signed > 0:
+        create_batch(db, item=item, qty=signed, expiry=expiry_date, lot=lot_code, party=party, user=user, movement_id=mv.id)
+    elif type == "adjust" and signed < 0:
+        mv.batch_refs = deplete_fefo(db, item=item, qty=abs(signed))
+
     db.commit()
     db.refresh(mv)
 
@@ -276,21 +279,73 @@ def correct_stock(db: Session, *, item: Item, target: float, user: User | None,
 
 
 def void_movement(db: Session, *, movement: Movement, user: User | None, source: str = "manual") -> Movement | None:
-    """Reverse a movement (undo a mistake) with a compensating adjustment.
+    """Reverse a movement (undo a mistake), restoring batches exactly.
 
+    - Undoing an intake removes that intake's own batch (its remaining qty).
+    - Undoing a dispatch re-creates the exact batches it consumed (same expiry
+      dates and lot codes).
     The original record is kept (audit integrity) and flagged voided.
     """
+    from datetime import date as _date
+
+    from .expiry import create_batch, deplete_fefo
+
     if movement.voided:
         return None
-    reverse = -float(movement.signed_quantity or 0.0)
-    mv = record_movement(
-        db, item=movement.item, type="adjust", quantity=reverse, user=user, reason="correction",
+
+    item = movement.item
+    orig_signed = float(movement.signed_quantity or 0.0)
+
+    if orig_signed > 0:
+        # Reverse an increase: remove the batch this movement created.
+        linked = db.query(Batch).filter(Batch.movement_id == movement.id).all()
+        removed = 0.0
+        if linked:
+            for b in linked:
+                removed += b.qty_remaining or 0.0
+                b.qty_remaining = 0.0
+        else:
+            # Legacy/no link: FEFO-deplete up to what's available.
+            consumed = deplete_fefo(db, item=item, qty=min(abs(orig_signed), item.quantity or 0.0))
+            removed = sum(c["qty"] for c in consumed)
+        signed = -removed
+    else:
+        # Reverse a decrease: restore the exact batches consumed.
+        refs = movement.batch_refs or []
+        restored = 0.0
+        if refs:
+            for ref in refs:
+                exp = None
+                if ref.get("expiry"):
+                    try:
+                        exp = _date.fromisoformat(ref["expiry"])
+                    except Exception:
+                        exp = None
+                create_batch(db, item=item, qty=ref["qty"], expiry=exp, lot=ref.get("lot", ""),
+                             party="", user=user)
+                restored += float(ref["qty"])
+        else:
+            restored = abs(orig_signed)
+            create_batch(db, item=item, qty=restored, expiry=None, lot="", party="", user=user)
+        signed = restored
+
+    new_balance = round((item.quantity or 0.0) + signed, 4)
+    reversal = Movement(
+        item_id=item.id, center_id=item.center_id, type="adjust",
+        quantity=abs(signed), unit=item.unit, signed_quantity=signed, balance_after=new_balance,
+        reason="correction",
         note=f"Reversed entry from {movement.created_at:%Y-%m-%d}" if movement.created_at else "Reversed entry",
-        source=source,
+        source=source, user_id=user.id if user else None,
     )
+    item.quantity = new_balance
     movement.voided = True
+    db.add(reversal)
     db.commit()
-    return mv
+    db.refresh(reversal)
+
+    audit(db, user, "movement.void", "movement", movement.id,
+          {"item_name": item.canonical_name, "reversed_signed": signed, "balance_after": new_balance})
+    return reversal
 
 
 def current_stock_total(db: Session) -> float:

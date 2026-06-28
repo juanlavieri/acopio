@@ -213,6 +213,9 @@ class Movement(Base):
     lot_code: Mapped[str] = mapped_column(String, default="")
     # Set true when this movement has been reversed/undone by a correction.
     voided: Mapped[bool] = mapped_column(Boolean, default=False)
+    # For dispatches/decreases: the batches (expiry/lot/qty) consumed, so an
+    # undo can restore stock with the exact original expiry dates.
+    batch_refs: Mapped[list] = mapped_column(JSON, default=list)
     source: Mapped[str] = mapped_column(String, default="manual")  # manual | upload | agent
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
@@ -362,6 +365,8 @@ class Batch(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: _uuid("btc"))
     item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), index=True)
     center_id: Mapped[str | None] = mapped_column(ForeignKey("centers.id"), nullable=True, index=True)
+    # The intake movement that created this batch (enables precise undo).
+    movement_id: Mapped[str | None] = mapped_column(ForeignKey("movements.id"), nullable=True, index=True)
     lot_code: Mapped[str] = mapped_column(String, default="")
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     qty_received: Mapped[float] = mapped_column(Float, default=0.0)

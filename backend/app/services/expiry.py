@@ -53,10 +53,11 @@ def item_expiry_info(db: Session, item_id: str) -> dict:
 
 
 def create_batch(db: Session, *, item: Item, qty: float, expiry: date | None,
-                 lot: str, party: str, user: User | None) -> Batch:
+                 lot: str, party: str, user: User | None, movement_id: str | None = None) -> Batch:
     batch = Batch(
         item_id=item.id,
         center_id=item.center_id,
+        movement_id=movement_id,
         lot_code=lot or "",
         expiry_date=expiry,
         qty_received=qty,
@@ -68,14 +69,15 @@ def create_batch(db: Session, *, item: Item, qty: float, expiry: date | None,
     return batch
 
 
-def deplete_fefo(db: Session, *, item: Item, qty: float) -> None:
+def deplete_fefo(db: Session, *, item: Item, qty: float) -> list[dict]:
     """Reduce batch quantities First-Expired-First-Out.
 
-    Order: nearest expiry first (non-null), then undated batches by receipt
-    date. Untracked legacy stock beyond batch coverage is simply ignored (the
-    cached Item.quantity remains the authoritative ledger total).
+    Returns the consumed slices [{expiry, lot, qty}] so a later undo can restore
+    stock with the exact original expiry dates. Order: nearest expiry first
+    (non-null), then undated batches by receipt date.
     """
     remaining = float(qty)
+    consumed: list[dict] = []
     batches = db.query(Batch).filter(Batch.item_id == item.id, Batch.qty_remaining > 0).all()
     batches.sort(key=lambda b: (b.expiry_date is None, b.expiry_date or date.max, b.created_at))
     for b in batches:
@@ -84,3 +86,9 @@ def deplete_fefo(db: Session, *, item: Item, qty: float) -> None:
         take = min(b.qty_remaining, remaining)
         b.qty_remaining = round(b.qty_remaining - take, 4)
         remaining -= take
+        consumed.append({
+            "expiry": b.expiry_date.isoformat() if b.expiry_date else None,
+            "lot": b.lot_code or "",
+            "qty": take,
+        })
+    return consumed

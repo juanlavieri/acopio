@@ -383,6 +383,19 @@ def list_records(name: str, db: Session = Depends(get_db), _user: User = Depends
     return {"table": t.public(), "records": [r.public() for r in recs]}
 
 
+# --- corrections log -----------------------------------------------------
+@router.get("/corrections")
+def list_corrections(
+    limit: int = Query(default=100, le=500),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    vis = visible_center_ids(db, user)
+    q = scope_query_by_center(db.query(Movement), Movement, vis).filter(Movement.reason == "correction")
+    rows = q.order_by(Movement.created_at.desc()).limit(limit).all()
+    return {"corrections": [m.public() for m in rows]}
+
+
 # --- audit log -----------------------------------------------------------
 @router.get("/audit")
 def list_audit(

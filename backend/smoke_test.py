@@ -286,6 +286,34 @@ check("original entry flagged voided", voided["voided"] is True)
 r = c.patch(f"/api/items/{lid}", headers=H(vol), json={"canonical_name": "Linterna LED prueba", "unit": "unidad"})
 check("edit item name/unit", r.status_code == 200 and r.json()["item"]["canonical_name"] == "Linterna LED prueba")
 
+# --- precise undo restores exact expiry/lot -----------------------------
+expA = (date.today() + timedelta(days=25)).isoformat()
+r = c.post("/api/movements", headers=H(vol), json={"item_name": "Atun lata", "type": "in", "quantity": 30, "unit": "lata", "expiry_date": expA})
+atun_id = r.json()["item"]["id"]
+mid_in = r.json()["movement"]["id"]
+batches = c.get(f"/api/items/{atun_id}", headers=H(vol)).json()["batches"]
+check("intake created its batch", any(b["expiry_date"] == expA and b["qty_remaining"] == 30 for b in batches))
+r = c.post(f"/api/movements/{mid_in}/void", headers=H(vol))
+check("undo intake removes stock", r.json()["item"]["quantity"] == 0)
+batches = c.get(f"/api/items/{atun_id}", headers=H(vol)).json()["batches"]
+check("undo intake removed its batch", all(b["expiry_date"] != expA for b in batches))
+
+expB = (date.today() + timedelta(days=40)).isoformat()
+r = c.post("/api/movements", headers=H(vol), json={"item_name": "Sopa sobre", "type": "in", "quantity": 50, "unit": "sobre", "expiry_date": expB})
+sopa_id = r.json()["item"]["id"]
+r = c.post("/api/movements", headers=H(vol), json={"item_id": sopa_id, "type": "out", "quantity": 20})
+mid_out = r.json()["movement"]["id"]
+r = c.post(f"/api/movements/{mid_out}/void", headers=H(vol))
+check("undo dispatch restores qty", r.json()["item"]["quantity"] == 50)
+batches = c.get(f"/api/items/{sopa_id}", headers=H(vol)).json()["batches"]
+restored = sum(b["qty_remaining"] for b in batches if b["expiry_date"] == expB)
+check("undo dispatch restored exact expiry batch", restored == 50)
+
+# --- corrections log -----------------------------------------------------
+r = c.get("/api/corrections", headers=H(vol))
+check("corrections log lists corrections", r.status_code == 200 and len(r.json()["corrections"]) >= 2)
+check("corrections are reason=correction", all(m["reason"] == "correction" for m in r.json()["corrections"]))
+
 # --- auth enforced -------------------------------------------------------
 check("auth enforced", c.get("/api/items").status_code == 401)
 
