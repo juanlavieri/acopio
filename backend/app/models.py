@@ -211,6 +211,8 @@ class Movement(Base):
     reason: Mapped[str] = mapped_column(String, default="")
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     lot_code: Mapped[str] = mapped_column(String, default="")
+    # Set true when this movement has been reversed/undone by a correction.
+    voided: Mapped[bool] = mapped_column(Boolean, default=False)
     source: Mapped[str] = mapped_column(String, default="manual")  # manual | upload | agent
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
@@ -235,6 +237,7 @@ class Movement(Base):
             "reason": self.reason or "",
             "expiry_date": self.expiry_date.isoformat() if self.expiry_date else None,
             "lot_code": self.lot_code or "",
+            "voided": bool(self.voided),
             "source": self.source,
             "user_id": self.user_id,
             "user_name": self.user.name if self.user else None,

@@ -268,6 +268,24 @@ r = sync_preview(b"Code,Item,Qty\nABC123,Guantes de nitrilo (caja),80\n")
 plan = r.json()["plan"]
 check("barcode preview matches existing item", plan[0]["item_id"] is not None and plan[0]["current"] == 50)
 
+# --- corrections: set-to-value, void, edit ------------------------------
+r = c.post("/api/movements", headers=H(vol), json={"item_name": "Linterna prueba", "type": "in", "quantity": 60, "unit": "u"})
+lid = r.json()["item"]["id"]
+r = c.post(f"/api/items/{lid}/correct", headers=H(vol), json={"quantity": 45, "note": "recount"})
+check("correct sets qty to 45", r.status_code == 200 and r.json()["item"]["quantity"] == 45)
+
+r = c.post("/api/movements", headers=H(vol), json={"item_id": lid, "type": "in", "quantity": 10})
+mid = r.json()["movement"]["id"]
+check("wrong entry pushes to 55", r.json()["item"]["quantity"] == 55)
+r = c.post(f"/api/movements/{mid}/void", headers=H(vol))
+check("void reverses back to 45", r.status_code == 200 and r.json()["item"]["quantity"] == 45)
+check("re-void blocked", c.post(f"/api/movements/{mid}/void", headers=H(vol)).status_code == 409)
+voided = [m for m in c.get(f"/api/items/{lid}", headers=H(vol)).json()["movements"] if m["id"] == mid][0]
+check("original entry flagged voided", voided["voided"] is True)
+
+r = c.patch(f"/api/items/{lid}", headers=H(vol), json={"canonical_name": "Linterna LED prueba", "unit": "unidad"})
+check("edit item name/unit", r.status_code == 200 and r.json()["item"]["canonical_name"] == "Linterna LED prueba")
+
 # --- auth enforced -------------------------------------------------------
 check("auth enforced", c.get("/api/items").status_code == 401)
 

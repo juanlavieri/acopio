@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, Download, Plus, Search, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Download, Pencil, Plus, Search, Sparkles, Trash2, Undo2, Wrench, X } from "lucide-react";
 import { api } from "../lib/api";
 import { REASONS, expiryColor, fmtDate, fmtNum, kindColor } from "../lib/ui";
 import { useT } from "../lib/i18n.jsx";
@@ -164,7 +164,7 @@ export default function Inventory() {
         <ItemModal categories={categories} scope={scope}
           onClose={() => setModal(null)} onSaved={() => { setModal(null); load(); }} />
       )}
-      {detail && <ItemDrawer itemId={detail} onClose={() => setDetail(null)} onChanged={load} />}
+      {detail && <ItemDrawer itemId={detail} categories={categories} onClose={() => setDetail(null)} onChanged={load} />}
     </div>
   );
 }
@@ -338,10 +338,21 @@ function ItemModal({ categories, scope, onClose, onSaved }) {
   );
 }
 
-function ItemDrawer({ itemId, onClose }) {
+function ItemDrawer({ itemId, categories, onClose, onChanged }) {
   const { t, kindName } = useT();
   const [data, setData] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [correcting, setCorrecting] = useState(false);
+
+  const reload = () => api.get(`/api/items/${itemId}`).then((d) => { setData(d); onChanged?.(); });
   useEffect(() => { api.get(`/api/items/${itemId}`).then(setData); }, [itemId]);
+
+  const voidMovement = async (m) => {
+    if (!confirm(t("inv.undoConfirm"))) return;
+    await api.post(`/api/movements/${m.id}/void`);
+    reload();
+    window.dispatchEvent(new CustomEvent("acopio:data-changed"));
+  };
 
   return (
     <div className="fixed inset-0 z-50">
@@ -353,22 +364,41 @@ function ItemDrawer({ itemId, onClose }) {
         </div>
         {!data ? (
           <div className="text-slate-400">{t("common.loading")}</div>
+        ) : editing ? (
+          <EditItemForm item={data.item} categories={categories} onCancel={() => setEditing(false)}
+            onSaved={() => { setEditing(false); reload(); window.dispatchEvent(new CustomEvent("acopio:data-changed")); }} />
         ) : (
           <>
             <div className="rounded-2xl border border-slate-200 p-4">
-              <div className="text-xl font-bold text-slate-800">{data.item.canonical_name}</div>
+              <div className="flex items-start justify-between gap-2">
+                <div className="text-xl font-bold text-slate-800">{data.item.canonical_name}</div>
+                <button onClick={() => setEditing(true)}
+                  className="flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">
+                  <Pencil size={13} /> {t("inv.edit")}
+                </button>
+              </div>
               <div className="mt-1 flex flex-wrap items-center gap-2">
                 <CatBadge kind={data.item.category_kind} name={kindName(data.item.category_kind)} />
                 <ExpiryPill status={data.item.expiry_status} date={data.item.earliest_expiry} t={t} />
                 {data.item.center && <span className="text-xs text-slate-400">· {data.item.center}</span>}
               </div>
-              <div className="mt-3 text-3xl font-bold text-brand-700">
-                {fmtNum(data.item.quantity)} <span className="text-base font-medium text-slate-400">{data.item.unit}</span>
+              <div className="mt-3 flex items-end justify-between">
+                <div className="text-3xl font-bold text-brand-700">
+                  {fmtNum(data.item.quantity)} <span className="text-base font-medium text-slate-400">{data.item.unit}</span>
+                </div>
+                <button onClick={() => setCorrecting((v) => !v)}
+                  className="flex items-center gap-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-100">
+                  <Wrench size={14} /> {t("inv.correctStock")}
+                </button>
               </div>
               <div className="mt-1 text-xs text-slate-400">
                 {data.item.barcode ? `${t("inv.barcode")}: ${data.item.barcode} · ` : ""}
                 {t("inv.minStock")}: {fmtNum(data.item.min_quantity)}
               </div>
+              {correcting && (
+                <CorrectStockForm item={data.item} t={t}
+                  onDone={() => { setCorrecting(false); reload(); window.dispatchEvent(new CustomEvent("acopio:data-changed")); }} />
+              )}
             </div>
 
             {data.batches?.length > 0 && (
@@ -394,22 +424,100 @@ function ItemDrawer({ itemId, onClose }) {
                 <div className="text-sm text-slate-400">{t("inv.noMovements")}</div>
               ) : (
                 data.movements.map((m) => (
-                  <div key={m.id} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-sm">
-                    <div>
-                      <div className={`font-semibold ${m.type === "in" ? "text-green-600" : "text-orange-600"}`}>
-                        {m.type === "in" ? "+" : "−"}{fmtNum(m.quantity)} {m.unit}
+                  <div key={m.id} className={`flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-sm ${m.voided ? "opacity-50" : ""}`}>
+                    <div className="min-w-0">
+                      <div className={`font-semibold ${m.voided ? "text-slate-400 line-through" : m.type === "in" ? "text-green-600" : m.type === "out" ? "text-orange-600" : "text-slate-600"}`}>
+                        {m.signed_quantity > 0 ? "+" : "−"}{fmtNum(m.quantity)} {m.unit}
                         {m.reason && <span className="ml-1 text-xs font-normal text-slate-400">· {t(`reason.${m.reason}`)}</span>}
+                        {m.voided && <span className="ml-1 rounded bg-slate-200 px-1 text-[10px] not-italic text-slate-500 no-underline">{t("inv.voided")}</span>}
                       </div>
                       <div className="text-xs text-slate-400">{m.user_name || "—"} · {m.party || "—"} · {fmtDate(m.created_at)}</div>
-                      {m.note && <div className="text-xs italic text-slate-500">"{m.note}"</div>}
+                      {m.note && <div className="truncate text-xs italic text-slate-500">"{m.note}"</div>}
                     </div>
-                    <div className="text-xs text-slate-400">{t("inv.balance")} {fmtNum(m.balance_after)}</div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="text-xs text-slate-400">{t("inv.balance")} {fmtNum(m.balance_after)}</span>
+                      {!m.voided && m.reason !== "correction" && (
+                        <button onClick={() => voidMovement(m)} title={t("inv.undo")}
+                          className="rounded-lg p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"><Undo2 size={15} /></button>
+                      )}
+                    </div>
                   </div>
                 ))
               )}
             </div>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+function CorrectStockForm({ item, t, onDone }) {
+  const [qty, setQty] = useState(String(item.quantity ?? 0));
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/api/items/${item.id}/correct`, { quantity: Number(qty), note });
+      onDone();
+    } finally { setBusy(false); }
+  };
+  return (
+    <div className="mt-3 space-y-2 rounded-xl bg-amber-50 p-3">
+      <Input label={t("inv.correctTo")} value={qty} onChange={setQty} type="number" />
+      <Input label={t("inv.correctNote")} value={note} onChange={setNote} />
+      <button onClick={save} disabled={busy}
+        className="w-full rounded-lg bg-amber-600 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-60">
+        {busy ? t("login.pleaseWait") : t("inv.apply")}
+      </button>
+    </div>
+  );
+}
+
+function EditItemForm({ item, categories, onCancel, onSaved }) {
+  const { t } = useT();
+  const [name, setName] = useState(item.canonical_name);
+  const [unit, setUnit] = useState(item.unit);
+  const [categoryId, setCategoryId] = useState(item.category_id || "");
+  const [minQty, setMinQty] = useState(String(item.min_quantity ?? 0));
+  const [barcode, setBarcode] = useState(item.barcode || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const save = async () => {
+    if (!name.trim()) return setError(t("inv.nameRequired"));
+    setBusy(true);
+    try {
+      await api.patch(`/api/items/${item.id}`, {
+        canonical_name: name, unit, category_id: categoryId || null,
+        min_quantity: Number(minQty) || 0, barcode,
+      });
+      onSaved();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="space-y-3">
+      <Input label={t("inv.name")} value={name} onChange={setName} />
+      <div className="grid grid-cols-2 gap-2">
+        <Input label={t("inv.unit")} value={unit} onChange={setUnit} />
+        <Input label={t("inv.minStock")} value={minQty} onChange={setMinQty} type="number" />
+      </div>
+      <Input label={t("inv.barcode")} value={barcode} onChange={setBarcode} />
+      <label className="block">
+        <span className="mb-1 block text-sm font-medium text-slate-600">{t("inv.col.category")}</span>
+        <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="ac-sel">
+          <option value="">{t("inv.autoDetect")}</option>
+          {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </label>
+      {error && <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>}
+      <div className="flex gap-2">
+        <button onClick={onCancel} className="flex-1 rounded-xl border border-slate-200 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-50">
+          {t("common.cancel")}
+        </button>
+        <button onClick={save} disabled={busy} className="flex-1 rounded-xl bg-brand-700 py-2.5 text-sm font-semibold text-white hover:bg-brand-800 disabled:opacity-60">
+          {busy ? t("login.pleaseWait") : t("inv.saveChanges")}
+        </button>
       </div>
     </div>
   );

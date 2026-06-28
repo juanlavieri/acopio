@@ -25,9 +25,16 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..auth import audit
-from ..models import CustomField, CustomRecord, CustomTable, Item, User
+from ..models import Category, CustomField, CustomRecord, CustomTable, Item, Movement, User
 from ..scope import resolve_target_center, visible_center_ids
-from .inventory import record_movement, resolve_or_create_item
+from .inventory import (
+    KINDS,
+    correct_stock,
+    match_item,
+    record_movement,
+    resolve_or_create_item,
+    void_movement,
+)
 from .llm import get_llm
 from .semantic import get_index
 
@@ -139,6 +146,53 @@ def _tool_schemas() -> list[dict]:
                         "note": {"type": "string"},
                     },
                     "required": ["item_name", "quantity"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "correct_stock",
+                "description": "Fix/correct an item's CURRENT stock to the right absolute number (use when a previous entry was wrong). Logs a correction.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "item_name": {"type": "string"},
+                        "quantity": {"type": "number", "description": "The correct current quantity on hand."},
+                        "note": {"type": "string"},
+                    },
+                    "required": ["item_name", "quantity"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "update_item",
+                "description": "Correct an item's details: rename, change unit, category, reorder level or barcode.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "item_name": {"type": "string", "description": "Current name (or barcode) to find the item."},
+                        "new_name": {"type": "string"},
+                        "unit": {"type": "string"},
+                        "category_kind": {"type": "string", "enum": KINDS},
+                        "min_quantity": {"type": "number"},
+                        "barcode": {"type": "string"},
+                    },
+                    "required": ["item_name"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "undo_last_movement",
+                "description": "Undo/reverse the most recent stock movement for an item (when it was entered by mistake).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"item_name": {"type": "string"}},
+                    "required": ["item_name"],
                 },
             },
         },
@@ -330,6 +384,53 @@ def _exec_tool(db: Session, user: User, name: str, args: dict, center_id: str | 
             db.commit()
             audit(db, user, "need.create", "need", need.id, {"item": need.item_name})
             return {"ok": True, "need_id": need.id, "item": need.item_name}
+
+        if name in {"correct_stock", "update_item", "undo_last_movement"}:
+            try:
+                target_center = resolve_target_center(db, user, center_id)
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            item = match_item(db, name=args["item_name"], center_id=target_center, barcode=args.get("item_name", ""))
+            if not item:
+                return {"ok": False, "error": f"No item matching '{args['item_name']}' was found."}
+
+            if name == "correct_stock":
+                mv = correct_stock(db, item=item, target=float(args.get("quantity", 0)), user=user,
+                                   note=args.get("note", ""), source="agent")
+                return {"ok": True, "item": item.canonical_name, "new_balance": item.quantity,
+                        "changed": mv is not None}
+
+            if name == "update_item":
+                if args.get("new_name"):
+                    item.canonical_name = args["new_name"]
+                    from .inventory import fingerprint
+                    item.fingerprint = fingerprint(args["new_name"])
+                if args.get("unit"):
+                    item.unit = args["unit"]
+                if args.get("barcode"):
+                    item.barcode = args["barcode"]
+                if args.get("min_quantity") is not None:
+                    item.min_quantity = float(args["min_quantity"])
+                if args.get("category_kind"):
+                    cat = db.query(Category).filter(Category.kind == args["category_kind"]).first()
+                    if cat:
+                        item.category_id = cat.id
+                db.commit()
+                get_index().upsert(item.id, f"{item.canonical_name}. {item.description}")
+                audit(db, user, "item.update", "item", item.id, {"via": "agent"})
+                return {"ok": True, "item": item.canonical_name}
+
+            # undo_last_movement
+            last = (
+                db.query(Movement)
+                .filter(Movement.item_id == item.id, Movement.voided == False, Movement.reason != "correction")  # noqa: E712
+                .order_by(Movement.created_at.desc())
+                .first()
+            )
+            if not last:
+                return {"ok": False, "error": "No movement to undo for this item."}
+            void_movement(db, movement=last, user=user, source="agent")
+            return {"ok": True, "item": item.canonical_name, "undone": last.public(), "new_balance": item.quantity}
 
         if name == "create_item":
             try:

@@ -26,7 +26,7 @@ from ..models import (
 )
 from ..scope import resolve_target_center, scope_query_by_center, visible_center_ids
 from ..services.expiry import expiry_status, item_expiry_info, today
-from ..services.inventory import record_movement, resolve_or_create_item
+from ..services.inventory import correct_stock, record_movement, resolve_or_create_item, void_movement
 from ..services.semantic import get_index
 
 
@@ -232,6 +232,37 @@ def create_movement(body: MovementIn, db: Session = Depends(get_db), user: User 
         reason=body.reason, expiry_date=body.expiry_date, lot_code=body.lot_code, source="manual",
     )
     return {"movement": mv.public(), "item": item.public()}
+
+
+class CorrectIn(BaseModel):
+    quantity: float
+    note: str = ""
+
+
+@router.post("/items/{item_id}/correct")
+def correct_item(item_id: str, body: CorrectIn, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """Set an item's stock to the correct value (logged as a correction)."""
+    item = _require_item_in_scope(db, user, item_id)
+    mv = correct_stock(db, item=item, target=body.quantity, user=user, note=body.note, source="manual")
+    return {"item": item.public(), "corrected": mv is not None}
+
+
+@router.post("/movements/{movement_id}/void")
+def void_movement_route(movement_id: str, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """Undo a wrong movement with a compensating reversal."""
+    mv = db.get(Movement, movement_id)
+    if not mv:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Movement not found.")
+    vis = visible_center_ids(db, user)
+    if vis is not None and mv.center_id not in vis:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Outside your scope.")
+    if mv.voided:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This entry was already undone.")
+    reversal = void_movement(db, movement=mv, user=user, source="manual")
+    item = db.get(Item, mv.item_id)
+    return {"ok": True, "reversed": reversal is not None, "item": item.public() if item else None}
 
 
 @router.get("/movements")

@@ -263,6 +263,36 @@ def record_movement(
     return mv
 
 
+def correct_stock(db: Session, *, item: Item, target: float, user: User | None,
+                  note: str = "", source: str = "manual") -> Movement | None:
+    """Set an item's stock to the correct absolute value via a logged adjustment."""
+    delta = round(float(target) - float(item.quantity or 0.0), 4)
+    if abs(delta) < 1e-9:
+        return None
+    return record_movement(
+        db, item=item, type="adjust", quantity=delta, user=user, reason="correction",
+        note=note or f"Corrected stock to {float(target):g}", source=source,
+    )
+
+
+def void_movement(db: Session, *, movement: Movement, user: User | None, source: str = "manual") -> Movement | None:
+    """Reverse a movement (undo a mistake) with a compensating adjustment.
+
+    The original record is kept (audit integrity) and flagged voided.
+    """
+    if movement.voided:
+        return None
+    reverse = -float(movement.signed_quantity or 0.0)
+    mv = record_movement(
+        db, item=movement.item, type="adjust", quantity=reverse, user=user, reason="correction",
+        note=f"Reversed entry from {movement.created_at:%Y-%m-%d}" if movement.created_at else "Reversed entry",
+        source=source,
+    )
+    movement.voided = True
+    db.commit()
+    return mv
+
+
 def current_stock_total(db: Session) -> float:
     return float(db.query(func.coalesce(func.sum(Item.quantity), 0.0)).scalar() or 0.0)
 

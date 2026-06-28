@@ -88,6 +88,7 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "reason": "VARCHAR",
         "expiry_date": "DATE",
         "lot_code": "VARCHAR",
+        "voided": "BOOLEAN",
     },
     "uploads": {"mode": "VARCHAR", "content_hash": "VARCHAR", "center_id": "VARCHAR", "plan": "JSON"},
 }
