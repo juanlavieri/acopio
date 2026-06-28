@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, Download, Pencil, Plus, Search, Sparkles, Trash2, Undo2, Wrench, X } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Download, Pencil, Plus, Printer, QrCode, Search, Sparkles, Trash2, Undo2, Wrench, X } from "lucide-react";
 import { api } from "../lib/api";
 import { REASONS, expiryColor, fmtDate, fmtNum, kindColor } from "../lib/ui";
 import { useT } from "../lib/i18n.jsx";
 import { useScope } from "../lib/scope.jsx";
+import { printBinCards, printLabels } from "../lib/print";
 
 export default function Inventory() {
   const { t, kindName } = useT();
@@ -68,6 +69,14 @@ export default function Inventory() {
           <button onClick={() => exportCsv("items")}
             className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50" title={t("inv.exportItems")}>
             <Download size={16} /> <span className="hidden sm:inline">{t("inv.export")}</span>
+          </button>
+          <button onClick={() => printLabels(filtered, { title: "Acopio" })}
+            className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50" title={t("inv.printLabels")}>
+            <QrCode size={16} /> <span className="hidden lg:inline">{t("inv.printLabels")}</span>
+          </button>
+          <button onClick={() => printBinCards(filtered, { t })}
+            className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50" title={t("inv.printBinCards")}>
+            <Printer size={16} /> <span className="hidden lg:inline">{t("inv.printBinCards")}</span>
           </button>
           <button onClick={() => setModal({ type: "item" })}
             className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">

@@ -4,6 +4,7 @@ Everything is scoped to the centers the current user can see.
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -91,6 +92,35 @@ def list_items(
         query = query.filter(Item.category_id == category_id)
     items = query.order_by(Item.canonical_name).limit(limit).all()
     return {"items": _enrich(db, items)}
+
+
+@router.get("/items/lookup")
+def lookup_item(code: str = Query(...), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Resolve a scanned QR/barcode to an inventory item.
+
+    Accepts our own QR payloads (``acopio:item:<id>`` or a URL with ``item=<id>``)
+    or a plain product barcode (matched against Item.barcode within scope).
+    """
+    code = (code or "").strip()
+    vis = visible_center_ids(db, user)
+    item = None
+
+    m = re.search(r"(?:acopio:item:|[?&]item=)([A-Za-z0-9_\-]+)", code)
+    if m:
+        item = db.get(Item, m.group(1))
+    if not item:
+        q = db.query(Item).filter(Item.barcode == code)
+        q = scope_query_by_center(q, Item, vis)
+        item = q.first()
+
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No item found for this code.")
+    if vis is not None and item.center_id not in vis:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Item outside your scope.")
+
+    d = item.public()
+    d.update(item_expiry_info(db, item.id))
+    return {"item": d, "code": code}
 
 
 def _require_item_in_scope(db: Session, user: User, item_id: str) -> Item:

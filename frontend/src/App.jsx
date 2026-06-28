@@ -11,6 +11,7 @@ import {
   Sparkles,
   LogOut,
   KeyRound,
+  ScanLine,
   Menu,
   X,
 } from "lucide-react";
@@ -18,6 +19,7 @@ import { useAuth } from "./lib/auth.jsx";
 import { useT } from "./lib/i18n.jsx";
 import { useScope } from "./lib/scope.jsx";
 import ChangePassword from "./components/ChangePassword.jsx";
+import Scanner from "./components/Scanner.jsx";
 import Login from "./pages/Login.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Inventory from "./pages/Inventory.jsx";
@@ -100,6 +102,7 @@ export default function App() {
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [pwdOpen, setPwdOpen] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
 
   if (loading) {
     return (
@@ -197,6 +200,13 @@ export default function App() {
           <div className="font-bold md:hidden">📦 Acopio</div>
           <div className="ml-auto flex items-center gap-2">
             <CenterSelector />
+            <button
+              onClick={() => setScanOpen(true)}
+              title={t("scan.title")}
+              className="grid h-9 w-9 place-items-center rounded-lg bg-brand-700 text-white hover:bg-brand-800"
+            >
+              <ScanLine size={18} />
+            </button>
             <LangToggle />
             <button
               onClick={() => setAssistantOpen(true)}
@@ -239,6 +249,7 @@ export default function App() {
       )}
 
       {pwdOpen && <ChangePassword onClose={() => setPwdOpen(false)} />}
+      {scanOpen && <Scanner onClose={() => setScanOpen(false)} />}
     </div>
   );
 }

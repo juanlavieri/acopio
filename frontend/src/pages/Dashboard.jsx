@@ -12,17 +12,28 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ArrowDownLeft, ArrowUpRight, Boxes, CalendarClock, PackageCheck, PackageX, TriangleAlert } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Boxes, CalendarClock, FileText, PackageCheck, PackageX, TriangleAlert } from "lucide-react";
 import { api } from "../lib/api";
 import { fmtNum, fmtDate, kindColor } from "../lib/ui";
 import { useT } from "../lib/i18n.jsx";
 import { useScope } from "../lib/scope.jsx";
+import { printReport } from "../lib/print";
 
 export default function Dashboard() {
-  const { t, kindName } = useT();
-  const { viewCenter } = useScope();
+  const { t, kindName, lang } = useT();
+  const { viewCenter, centers } = useScope();
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
+
+  const makeReport = async () => {
+    const qs = viewCenter ? `?center_id=${viewCenter}` : "";
+    const [summary, alerts] = await Promise.all([
+      api.get(`/api/dashboard/summary${qs}`),
+      api.get(`/api/alerts?days=30${viewCenter ? `&center_id=${viewCenter}` : ""}`).catch(() => ({ expiring: [], expired: [] })),
+    ]);
+    const centerName = viewCenter ? centers.find((c) => c.id === viewCenter)?.name : null;
+    printReport({ summary, alerts, centerName, t, lang });
+  };
 
   useEffect(() => {
     const load = () => {
@@ -41,9 +52,15 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-800">{t("dash.title")}</h1>
-        <p className="text-sm text-slate-500">{t("dash.subtitle")}</p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800">{t("dash.title")}</h1>
+          <p className="text-sm text-slate-500">{t("dash.subtitle")}</p>
+        </div>
+        <button onClick={makeReport}
+          className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">
+          <FileText size={16} /> {t("dash.report")}
+        </button>
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4 xl:grid-cols-7">

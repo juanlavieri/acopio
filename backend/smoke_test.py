@@ -314,6 +314,17 @@ r = c.get("/api/corrections", headers=H(vol))
 check("corrections log lists corrections", r.status_code == 200 and len(r.json()["corrections"]) >= 2)
 check("corrections are reason=correction", all(m["reason"] == "correction" for m in r.json()["corrections"]))
 
+# --- scan lookup (QR/barcode -> item) -----------------------------------
+r = c.post("/api/items", headers=H(vol), json={"name": "Scan item", "barcode": "EAN999"})
+scan_id = r.json()["item"]["id"]
+r = c.get("/api/items/lookup", headers=H(vol), params={"code": "EAN999"})
+check("lookup by barcode", r.status_code == 200 and r.json()["item"]["id"] == scan_id)
+r = c.get("/api/items/lookup", headers=H(vol), params={"code": f"acopio:item:{scan_id}"})
+check("lookup by QR payload", r.status_code == 200 and r.json()["item"]["id"] == scan_id)
+r = c.get("/api/items/lookup", headers=H(vol), params={"code": "https://x/?item=" + scan_id})
+check("lookup by URL payload", r.status_code == 200 and r.json()["item"]["id"] == scan_id)
+check("lookup unknown 404", c.get("/api/items/lookup", headers=H(vol), params={"code": "NOPE000"}).status_code == 404)
+
 # --- auth enforced -------------------------------------------------------
 check("auth enforced", c.get("/api/items").status_code == 401)
 

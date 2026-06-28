@@ -307,6 +307,26 @@ const en = {
   "pwd.tooShort": "New password must be at least 8 characters.",
   "pwd.success": "Password updated.",
   "pwd.save": "Update password",
+  // scanner
+  "scan.title": "Scan",
+  "scan.hint": "Point the camera at a QR code or barcode.",
+  "scan.manual": "Or type a code",
+  "scan.find": "Find",
+  "scan.cameraError": "Couldn't open the camera. Type the code instead.",
+  "scan.notFound": "No item found for this code.",
+  "scan.createWith": "Create an item with this code",
+  "scan.count": "Counted quantity",
+  "scan.saveCount": "Save count",
+  "scan.again": "Scan another",
+  "scan.in": "Receive",
+  "scan.out": "Dispatch",
+  "scan.qty": "Quantity",
+  "scan.saved": "Saved",
+  // print
+  "inv.print": "Print",
+  "inv.printLabels": "QR labels",
+  "inv.printBinCards": "Bin cards",
+  "dash.report": "Report (PDF)",
 };
 
 const es = {
@@ -594,6 +614,24 @@ const es = {
   "pwd.tooShort": "La nueva contraseña debe tener al menos 8 caracteres.",
   "pwd.success": "Contraseña actualizada.",
   "pwd.save": "Actualizar contraseña",
+  "scan.title": "Escanear",
+  "scan.hint": "Apunta la cámara a un código QR o de barras.",
+  "scan.manual": "O escribe un código",
+  "scan.find": "Buscar",
+  "scan.cameraError": "No se pudo abrir la cámara. Escribe el código.",
+  "scan.notFound": "No se encontró ningún artículo para este código.",
+  "scan.createWith": "Crear un artículo con este código",
+  "scan.count": "Cantidad contada",
+  "scan.saveCount": "Guardar conteo",
+  "scan.again": "Escanear otro",
+  "scan.in": "Recibir",
+  "scan.out": "Despachar",
+  "scan.qty": "Cantidad",
+  "scan.saved": "Guardado",
+  "inv.print": "Imprimir",
+  "inv.printLabels": "Etiquetas QR",
+  "inv.printBinCards": "Tarjetas de stock",
+  "dash.report": "Informe (PDF)",
 };
 
 const DICTS = { en, es };
