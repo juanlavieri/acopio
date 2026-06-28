@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, FileSpreadsheet, Loader2, RefreshCw, PackagePlus, UploadCloud, AlertCircle } from "lucide-react";
 import { api } from "../lib/api";
-import { fmtDate } from "../lib/ui";
+import { fmtNum, fmtDate } from "../lib/ui";
 import { useT } from "../lib/i18n.jsx";
 import { useScope } from "../lib/scope.jsx";
 
@@ -11,6 +11,7 @@ export default function Upload() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [duplicate, setDuplicate] = useState(null);
+  const [preview, setPreview] = useState(null); // {uploadId, rows:[{...,include}]}
   const [error, setError] = useState("");
   const [history, setHistory] = useState([]);
   const [drag, setDrag] = useState(false);
@@ -34,6 +35,7 @@ export default function Upload() {
     setError("");
     setResult(null);
     setDuplicate(null);
+    setPreview(null);
     try {
       const fd = new FormData();
       fd.append("file", file);
@@ -43,6 +45,8 @@ export default function Upload() {
       const res = await api.upload("/api/uploads", fd);
       if (res.duplicate) {
         setDuplicate(res);
+      } else if (res.preview) {
+        setPreview({ uploadId: res.upload.id, rows: res.plan.map((p) => ({ ...p, include: true })) });
       } else {
         setResult(res);
         loadHistory();
@@ -54,6 +58,35 @@ export default function Upload() {
       setBusy(false);
     }
   };
+
+  const approve = async () => {
+    if (!preview) return;
+    setBusy(true);
+    setError("");
+    try {
+      const items = preview.rows.filter((r) => r.include).map((r) => ({
+        item_id: r.item_id, name: r.name, barcode: r.barcode, unit: r.unit,
+        target: Number(r.target), expiry: r.expiry || null,
+      }));
+      const res = await api.post(`/api/uploads/${preview.uploadId}/commit`, { items });
+      setResult(res);
+      setPreview(null);
+      loadHistory();
+      window.dispatchEvent(new CustomEvent("acopio:data-changed"));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const discard = async () => {
+    if (preview) await api.post(`/api/uploads/${preview.uploadId}/cancel`).catch(() => {});
+    setPreview(null);
+  };
+
+  const editRow = (key, patch) =>
+    setPreview((p) => ({ ...p, rows: p.rows.map((r) => (r.key === key ? { ...r, ...patch } : r)) }));
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -124,6 +157,74 @@ export default function Upload() {
         </div>
       )}
 
+      {preview && (
+        <div className="rounded-2xl border border-brand-200 bg-white shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 p-4">
+            <div>
+              <div className="font-semibold text-slate-800">{t("up.preview.title")}</div>
+              <div className="text-xs text-slate-500">{t("up.preview.subtitle")}</div>
+            </div>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+              {t("up.previewCount", { n: preview.rows.length })}
+            </span>
+          </div>
+
+          <div className="max-h-[420px] overflow-auto">
+            <table className="w-full min-w-[560px] text-left text-sm">
+              <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">{t("up.col.include")}</th>
+                  <th className="px-3 py-2">{t("up.col.item")}</th>
+                  <th className="px-3 py-2 text-right">{t("up.col.current")}</th>
+                  <th className="px-3 py-2 text-right">{t("up.col.new")}</th>
+                  <th className="px-3 py-2 text-right">{t("up.col.change")}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {preview.rows.map((r) => {
+                  const delta = Number(r.target) - r.current;
+                  return (
+                    <tr key={r.key} className={r.include ? "" : "opacity-40"}>
+                      <td className="px-3 py-2">
+                        <input type="checkbox" checked={r.include} onChange={(e) => editRow(r.key, { include: e.target.checked })} />
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="font-medium text-slate-800">{r.name}</div>
+                        <div className="flex items-center gap-1.5">
+                          <StatusBadge status={r.status} t={t} />
+                          {r.barcode && <span className="text-xs text-slate-400">{r.barcode}</span>}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-right text-slate-500">{fmtNum(r.current)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <input type="number" value={r.target}
+                          onChange={(e) => editRow(r.key, { target: e.target.value })}
+                          className="w-24 rounded-lg border border-slate-200 px-2 py-1 text-right text-sm outline-none focus:border-brand-500" />
+                        <span className="ml-1 text-xs text-slate-400">{r.unit}</span>
+                      </td>
+                      <td className={`px-3 py-2 text-right font-semibold ${delta > 0 ? "text-green-600" : delta < 0 ? "text-orange-600" : "text-slate-400"}`}>
+                        {delta > 0 ? "+" : ""}{fmtNum(delta)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t border-slate-100 p-3">
+            <button onClick={discard} disabled={busy}
+              className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">
+              {t("up.discard")}
+            </button>
+            <button onClick={approve} disabled={busy}
+              className="rounded-xl bg-brand-700 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-800 disabled:opacity-60">
+              {busy ? t("up.applying") : t("up.approve")}
+            </button>
+          </div>
+        </div>
+      )}
+
       {result && (
         <div className="rounded-2xl border border-green-200 bg-green-50 p-5">
           <div className="flex items-center gap-2 font-semibold text-green-700">
@@ -188,6 +289,18 @@ export default function Upload() {
         </div>
       </div>
     </div>
+  );
+}
+
+function StatusBadge({ status, t }) {
+  const colors = {
+    new: "#0d9488", increase: "#16a34a", decrease: "#ea580c", unchanged: "#94a3b8",
+  };
+  const c = colors[status] || colors.unchanged;
+  return (
+    <span className="rounded-full px-1.5 py-0.5 text-[11px] font-medium" style={{ background: `${c}1a`, color: c }}>
+      {t(`up.st.${status}`)}
+    </span>
   );
 }
 

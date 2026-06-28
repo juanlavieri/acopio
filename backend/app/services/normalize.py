@@ -17,7 +17,8 @@ import os
 
 from sqlalchemy.orm import Session
 
-from .inventory import record_movement, resolve_or_create_item
+from ..models import Item
+from .inventory import fingerprint, match_item, record_movement, resolve_or_create_item
 from .llm import get_llm
 
 # Canonical fields we try to recover from any spreadsheet.
@@ -216,6 +217,96 @@ def _parse_grids(db, *, llm, grids, filename):
                 "expiry": _parse_date(_cell(row, mapping.get("date"))),
             })
     return rows_out, mappings_used, movement_type
+
+
+# --- sync preview / apply ------------------------------------------------
+def build_sync_plan(db: Session, *, parsed_rows: list[dict], center_id: str | None) -> list[dict]:
+    """Compute a proposed reconciliation (no DB writes): for each item in the
+    sheet, the matched current stock and the target the sheet would set it to."""
+    agg: dict[str, dict] = {}
+    for r in parsed_rows:
+        item = match_item(db, name=r["name"], center_id=center_id, barcode=r["barcode"])
+        if item:
+            key = item.id
+            entry = agg.setdefault(key, {
+                "key": key, "item_id": item.id, "name": item.canonical_name,
+                "barcode": item.barcode or r["barcode"], "unit": item.unit or r["unit"],
+                "current": float(item.quantity or 0.0), "target": 0.0, "expiry": None,
+                "category_kind": item.category.kind if item.category else "other",
+            })
+        else:
+            key = "new:" + (fingerprint(r["name"]) or r["barcode"] or str(len(agg)))
+            entry = agg.setdefault(key, {
+                "key": key, "item_id": None, "name": r["name"], "barcode": r["barcode"],
+                "unit": r["unit"], "current": 0.0, "target": 0.0, "expiry": None,
+                "category_kind": "other",
+            })
+        entry["target"] += r["qty"]
+        if r["expiry"] and not entry["expiry"]:
+            entry["expiry"] = r["expiry"].isoformat()
+
+    plan = []
+    for e in agg.values():
+        e["target"] = round(e["target"], 4)
+        e["delta"] = round(e["target"] - e["current"], 4)
+        if e["item_id"] is None:
+            e["status"] = "new"
+        elif abs(e["delta"]) < 1e-9:
+            e["status"] = "unchanged"
+        else:
+            e["status"] = "increase" if e["delta"] > 0 else "decrease"
+        plan.append(e)
+    plan.sort(key=lambda x: (x["status"] == "unchanged", x["name"].lower()))
+    return plan
+
+
+def preview_sync(db: Session, *, filename: str, data: bytes, center_id: str | None) -> dict:
+    grids = extract_tables(filename, data)
+    if not grids:
+        raise ValueError("Could not find any tabular data in this file.")
+    llm = get_llm()
+    parsed_rows, mappings_used, _mt = _parse_grids(db, llm=llm, grids=grids, filename=filename)
+    plan = build_sync_plan(db, parsed_rows=parsed_rows, center_id=center_id)
+    return {"plan": plan, "mappings": mappings_used, "rows": len(parsed_rows)}
+
+
+def apply_sync(db: Session, *, entries: list[dict], user, center_id: str | None, filename: str) -> dict:
+    """Apply an (approved, possibly edited) reconciliation plan."""
+    created = increased = decreased = unchanged = 0
+    for e in entries:
+        target = abs(float(e.get("target", 0) or 0))
+        item_id = e.get("item_id")
+        item = None
+        if item_id:
+            item = db.get(Item, item_id)
+            if not item or item.center_id != center_id:
+                continue
+        else:
+            item, _was = resolve_or_create_item(
+                db, name=(e.get("name") or e.get("barcode") or "Item"), user=user,
+                center_id=center_id, unit=e.get("unit", "unit"), barcode=e.get("barcode", ""),
+            )
+            created += 1
+        delta = round(target - float(item.quantity or 0.0), 4)
+        if abs(delta) < 1e-9:
+            unchanged += 1
+            continue
+        expiry = _parse_date(e.get("expiry")) if e.get("expiry") else None
+        record_movement(
+            db, item=item, type="adjust", quantity=delta, user=user, unit=e.get("unit") or item.unit,
+            reason="reconciliation", expiry_date=expiry if delta > 0 else None,
+            note=f"Sync import: {filename} (set to {target:g})", source="upload",
+        )
+        if delta > 0:
+            increased += 1
+        else:
+            decreased += 1
+    summary = (
+        f"Reconciled {len(entries)} items: {created} new, {increased} increased, "
+        f"{decreased} reduced, {unchanged} unchanged."
+    )
+    return {"created": created, "increased": increased, "decreased": decreased,
+            "unchanged": unchanged, "items": len(entries), "mode": "sync", "summary": summary}
 
 
 # --- orchestration -------------------------------------------------------

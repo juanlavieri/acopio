@@ -100,6 +100,40 @@ def _dedup_threshold() -> float:
     return 0.86 if settings.ai_enabled else 0.78
 
 
+def match_item(db: Session, *, name: str, center_id: str | None, barcode: str = "") -> Item | None:
+    """Find the existing canonical item that means the same thing, WITHOUT
+    creating anything. Matching order (scoped to the center):
+    barcode/code → exact normalized name → semantic nearest above threshold.
+    """
+    name = (name or "").strip()
+    barcode = (barcode or "").strip()
+    fp = fingerprint(name)
+
+    if barcode:
+        q = db.query(Item).filter(Item.barcode == barcode)
+        if center_id:
+            q = q.filter(Item.center_id == center_id)
+        existing = q.first()
+        if existing:
+            return existing
+
+    if fp:
+        q = db.query(Item).filter(Item.fingerprint == fp)
+        if center_id:
+            q = q.filter(Item.center_id == center_id)
+        existing = q.first()
+        if existing:
+            return existing
+
+    center_item_ids = {
+        i.id for i in db.query(Item.id).filter(Item.center_id == center_id).all()
+    } if center_id else None
+    nid, score = get_index().nearest(name, allowed=center_item_ids)
+    if nid and score >= _dedup_threshold():
+        return db.get(Item, nid)
+    return None
+
+
 def resolve_or_create_item(
     db: Session,
     *,
@@ -112,51 +146,20 @@ def resolve_or_create_item(
     category: Category | None = None,
     barcode: str = "",
 ) -> tuple[Item, bool]:
-    """Find an existing canonical item (within the same center) that means the
-    same thing, or create one. Dedup is scoped per collection center.
-
-    Matching order: barcode/code → exact normalized name → semantic
-    nearest-neighbour above threshold. Returns (item, created).
-    """
+    """Find an existing canonical item (within the same center) or create one.
+    Returns (item, created)."""
     name = (name or "").strip()
     barcode = (barcode or "").strip()
     fp = fingerprint(name)
     index = get_index()
 
-    # Candidate items belong to the same center.
-    center_item_ids = {
-        i.id for i in db.query(Item.id).filter(Item.center_id == center_id).all()
-    } if center_id else None
+    existing = match_item(db, name=name, center_id=center_id, barcode=barcode)
+    if existing:
+        if barcode and not existing.barcode:
+            existing.barcode = barcode
+            db.commit()
+        return existing, False
 
-    # 1) barcode / code match within the center (strongest signal)
-    if barcode:
-        q = db.query(Item).filter(Item.barcode == barcode)
-        if center_id:
-            q = q.filter(Item.center_id == center_id)
-        existing = q.first()
-        if existing:
-            return existing, False
-
-    # 2) exact normalized name match within the center
-    if fp:
-        q = db.query(Item).filter(Item.fingerprint == fp)
-        if center_id:
-            q = q.filter(Item.center_id == center_id)
-        existing = q.first()
-        if existing:
-            if barcode and not existing.barcode:
-                existing.barcode = barcode
-                db.commit()
-            return existing, False
-
-    # 3) semantic nearest neighbour within the center
-    nid, score = index.nearest(name, allowed=center_item_ids)
-    if nid and score >= _dedup_threshold():
-        existing = db.get(Item, nid)
-        if existing:
-            return existing, False
-
-    # 4) create new canonical item
     if category is None:
         category = categorize(db, name, description)
     item = Item(

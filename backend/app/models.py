@@ -279,6 +279,9 @@ class Upload(Base):
     mode: Mapped[str] = mapped_column(String, default="add")
     # SHA-256 of the uploaded bytes, to detect identical re-uploads.
     content_hash: Mapped[str] = mapped_column(String, default="", index=True)
+    # Target center for a sync, and the proposed reconciliation plan (preview).
+    center_id: Mapped[str | None] = mapped_column(ForeignKey("centers.id"), nullable=True)
+    plan: Mapped[list] = mapped_column(JSON, default=list)
     rows_detected: Mapped[int] = mapped_column(Integer, default=0)
     items_created: Mapped[int] = mapped_column(Integer, default=0)
     items_matched: Mapped[int] = mapped_column(Integer, default=0)

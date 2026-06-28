@@ -206,41 +206,67 @@ check("export items csv", r.status_code == 200 and r.text.startswith("item,categ
 r = c.get("/api/export/movements.csv", headers=H(vol))
 check("export movements csv", r.status_code == 200 and "date,type,item" in r.text)
 
-# --- re-upload dedup (sync mode, no double counting) --------------------
+# --- re-upload dedup with reconciliation preview/commit -----------------
 def _qty(name):
     items = c.get("/api/items", headers=H(vol), params={"q": name}).json()["items"]
     m = [i for i in items if i["canonical_name"].lower() == name.lower()]
     return m[0]["quantity"] if m else None
 
 
-va = b"Producto,Cantidad,Unidad\nAceite vegetal,100,litros\n"
-r = c.post("/api/uploads", headers=H(vol), files={"file": ("stock.csv", io.BytesIO(va), "text/csv")}, data={"mode": "sync"})
-check("sync upload v-a", r.status_code == 200 and r.json().get("result", {}).get("mode") == "sync")
-check("sync v-a sets qty 100", _qty("Aceite vegetal") == 100)
+def sync_preview(bytes_, force=False):
+    data = {"mode": "sync"}
+    if force:
+        data["force"] = "true"
+    return c.post("/api/uploads", headers=H(vol), files={"file": ("stock.csv", io.BytesIO(bytes_), "text/csv")}, data=data)
 
-# Updated version B of the SAME logical sheet (different content) → reconcile, not add.
-vb = b"Producto,Cantidad,Unidad\nAceite vegetal,140,litros\n"
-r = c.post("/api/uploads", headers=H(vol), files={"file": ("stock.csv", io.BytesIO(vb), "text/csv")}, data={"mode": "sync"})
-check("sync upload v-b", r.status_code == 200)
-check("sync v-b reconciles to 140 (no double count)", _qty("Aceite vegetal") == 140)
 
-# Re-uploading the EXACT same bytes is detected as a duplicate and skipped.
-r = c.post("/api/uploads", headers=H(vol), files={"file": ("stock.csv", io.BytesIO(vb), "text/csv")}, data={"mode": "sync"})
+def commit(upload_id, plan, overrides=None):
+    items = []
+    for e in plan:
+        target = (overrides or {}).get(e["name"], e["target"])
+        items.append({"item_id": e["item_id"], "name": e["name"], "barcode": e["barcode"],
+                      "unit": e["unit"], "target": target, "expiry": e.get("expiry")})
+    return c.post(f"/api/uploads/{upload_id}/commit", headers=H(vol), json={"items": items})
+
+
+# v-A: preview shows a NEW item at target 100, then commit applies it.
+r = sync_preview(b"Producto,Cantidad,Unidad\nAceite vegetal,100,litros\n")
+check("sync v-a returns preview", r.json().get("preview") is True)
+plan = r.json()["plan"]
+check("preview marks new item", plan[0]["status"] == "new" and plan[0]["target"] == 100)
+check("preview made no writes yet", _qty("Aceite vegetal") in (None, 0))
+r = commit(r.json()["upload"]["id"], plan)
+check("commit v-a sets qty 100", r.status_code == 200 and _qty("Aceite vegetal") == 100)
+
+# v-B: preview shows current 100 → target 140 (increase); commit reconciles (no double count).
+r = sync_preview(b"Producto,Cantidad,Unidad\nAceite vegetal,140,litros\n")
+plan = r.json()["plan"]
+check("preview shows current+delta", plan[0]["current"] == 100 and plan[0]["delta"] == 40 and plan[0]["status"] == "increase")
+r = commit(r.json()["upload"]["id"], plan)
+check("commit v-b reconciles to 140", _qty("Aceite vegetal") == 140)
+
+# Editing the proposed target before approval is respected.
+r = sync_preview(b"Producto,Cantidad,Unidad\nAceite vegetal,140,litros\n", force=True)
+up_id = r.json()["upload"]["id"]
+r = commit(up_id, r.json()["plan"], overrides={"Aceite vegetal": 175})
+check("edited target applied (175)", _qty("Aceite vegetal") == 175)
+
+# Identical committed file is later flagged duplicate.
+r = sync_preview(b"Producto,Cantidad,Unidad\nAceite vegetal,140,litros\n")
 check("identical re-upload flagged duplicate", r.json().get("duplicate") is True)
-check("duplicate did not change qty", _qty("Aceite vegetal") == 140)
 
-# Forcing re-import of the identical file is a no-op in sync mode (still 140).
-r = c.post("/api/uploads", headers=H(vol), files={"file": ("stock.csv", io.BytesIO(vb), "text/csv")}, data={"mode": "sync", "force": "true"})
-check("forced re-import processes", r.status_code == 200 and not r.json().get("duplicate"))
-check("forced sync still 140", _qty("Aceite vegetal") == 140)
+# Cancel discards a preview (no changes).
+r = sync_preview(b"Producto,Cantidad,Unidad\nAceite vegetal,999,litros\n")
+up_id = r.json()["upload"]["id"]
+c.post(f"/api/uploads/{up_id}/cancel", headers=H(vol))
+check("cancel leaves qty unchanged", _qty("Aceite vegetal") == 175)
 
-# barcode-based matching across uploads (name differs, code matches → same item)
-bc1 = b"Code,Item,Qty\nABC123,Guantes nitrilo,50\n"
-r = c.post("/api/uploads", headers=H(vol), files={"file": ("b1.csv", io.BytesIO(bc1), "text/csv")}, data={"mode": "sync"})
-check("barcode upload 1", r.status_code == 200)
-bc2 = b"Code,Item,Qty\nABC123,Guantes de nitrilo (caja),75\n"
-r = c.post("/api/uploads", headers=H(vol), files={"file": ("b2.csv", io.BytesIO(bc2), "text/csv")}, data={"mode": "sync"})
-check("barcode upload 2 matched same item", r.json()["result"]["created"] == 0 and r.json()["result"]["matched"] == 1)
+# Barcode matching across uploads (different names, same code → same item).
+r = sync_preview(b"Code,Item,Qty\nABC123,Guantes nitrilo,50\n")
+commit(r.json()["upload"]["id"], r.json()["plan"])
+r = sync_preview(b"Code,Item,Qty\nABC123,Guantes de nitrilo (caja),80\n")
+plan = r.json()["plan"]
+check("barcode preview matches existing item", plan[0]["item_id"] is not None and plan[0]["current"] == 50)
 
 # --- auth enforced -------------------------------------------------------
 check("auth enforced", c.get("/api/items").status_code == 401)
