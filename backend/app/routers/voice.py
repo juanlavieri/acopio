@@ -5,10 +5,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user
-from ..config import settings
 from ..db import get_db
 from ..models import User
-from ..services.llm import get_llm
+from ..services.llm import llm_for
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 
@@ -16,18 +15,19 @@ router = APIRouter(prefix="/api/voice", tags=["voice"])
 @router.post("/transcribe")
 async def transcribe(
     audio: UploadFile = File(...),
-    _user: User = Depends(get_current_user),
-    _db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    if not settings.ai_enabled:
+    llm = llm_for(db, user)
+    if not llm.enabled:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Server-side transcription needs an OpenAI key. Use the browser mic fallback.",
+            "Your organization has no OpenAI key. Use the browser mic fallback or add a key.",
         )
     data = await audio.read()
     if not data:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Empty audio.")
-    text = get_llm().transcribe(audio.filename or "audio.webm", data)
+    text = llm.transcribe(audio.filename or "audio.webm", data)
     if text is None:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Transcription failed.")
     return {"text": text}

@@ -52,7 +52,8 @@ def init_db() -> None:
 
         # Seed a default tenant + region + center on a fresh database.
         if db.query(Region).count() == 0 and db.query(Tenant).count() == 0:
-            tenant = Tenant(name=settings.default_region or settings.default_country, country=settings.default_country)
+            tenant = Tenant(name=settings.default_region or settings.default_country,
+                            country=settings.default_country, use_platform_key=True)
             db.add(tenant)
             db.flush()
             region = Region(name=settings.default_region, country=settings.default_country, tenant_id=tenant.id)
@@ -135,6 +136,7 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     },
     "uploads": {"mode": "VARCHAR", "content_hash": "VARCHAR", "center_id": "VARCHAR", "plan": "JSON"},
     "batches": {"movement_id": "VARCHAR"},
+    "tenants": {"openai_api_key": "VARCHAR", "use_platform_key": "BOOLEAN"},
 }
 
 
@@ -143,6 +145,7 @@ def _apply_additive_migrations() -> None:
 
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
+    added: set[str] = set()
     with engine.begin() as conn:
         for table, cols in _ADDITIVE_COLUMNS.items():
             if table not in existing_tables:
@@ -151,6 +154,11 @@ def _apply_additive_migrations() -> None:
             for col, sqltype in cols.items():
                 if col not in present:
                     conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {col} {sqltype}'))
+                    added.add(f"{table}.{col}")
+        # Grandfather: when the per-tenant AI flag is first added, allow all
+        # existing organizations to keep using the platform key.
+        if "tenants.use_platform_key" in added:
+            conn.execute(text("UPDATE tenants SET use_platform_key = 1"))
 
 
 DEFAULT_CATEGORIES: list[tuple[str, str, str]] = [

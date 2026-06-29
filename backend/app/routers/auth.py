@@ -52,7 +52,7 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     # The bootstrap account owns the seeded tenant (or a new one).
     tenant = db.query(Tenant).order_by(Tenant.created_at).first()
     if not tenant:
-        tenant = Tenant(name=email.split("@")[0], country="")
+        tenant = Tenant(name=email.split("@")[0], country="", use_platform_key=True)
         db.add(tenant)
         db.flush()
     user = User(

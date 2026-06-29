@@ -26,8 +26,10 @@ class ChatIn(BaseModel):
 
 
 @router.get("/status")
-def status_(_user: User = Depends(get_current_user)):
-    return {"ai_enabled": settings.ai_enabled, "model": settings.openai_model}
+def status_(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from ..services.llm import resolve_tenant_key
+
+    return {"ai_enabled": bool(resolve_tenant_key(db, user)), "model": settings.openai_model}
 
 
 @router.post("/chat")

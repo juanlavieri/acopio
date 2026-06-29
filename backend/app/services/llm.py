@@ -1,7 +1,9 @@
 """Thin OpenAI wrapper used for normalization, the agent and voice.
 
-Everything degrades gracefully: if no API key is configured every method
-returns a safe empty/None result and callers fall back to offline heuristics.
+The OpenAI key is resolved PER ORGANIZATION (tenant): a tenant's own key, else
+the platform key if the tenant is allowed, else AI is disabled for that tenant.
+Everything degrades gracefully: with no key, methods return None and callers
+fall back to offline heuristics.
 """
 from __future__ import annotations
 
@@ -11,14 +13,33 @@ from typing import Any
 from ..config import settings
 
 
+def resolve_tenant_key(db, user) -> str | None:
+    """The OpenAI key this user's organization may use (or None)."""
+    from ..models import Tenant
+    from ..scope import SUPER_ADMIN
+
+    if user is None:
+        return None
+    if user.role == SUPER_ADMIN:
+        return settings.openai_api_key
+    tenant = db.get(Tenant, user.tenant_id) if user.tenant_id else None
+    if not tenant:
+        return None
+    if tenant.openai_api_key:
+        return tenant.openai_api_key
+    if tenant.use_platform_key and settings.openai_api_key:
+        return settings.openai_api_key
+    return None
+
+
 class LLM:
-    def __init__(self) -> None:
+    def __init__(self, api_key: str | None = None) -> None:
         self._client = None
-        if settings.ai_enabled:
+        if api_key:
             try:
                 from openai import OpenAI
 
-                self._client = OpenAI(api_key=settings.openai_api_key)
+                self._client = OpenAI(api_key=api_key)
             except Exception:
                 self._client = None
 
@@ -84,11 +105,17 @@ class LLM:
             return None
 
 
-_llm: LLM | None = None
+_cache: dict[str, LLM] = {}
 
 
-def get_llm() -> LLM:
-    global _llm
-    if _llm is None:
-        _llm = LLM()
-    return _llm
+def get_llm(api_key: str | None = None) -> LLM:
+    """Cached LLM client per API key (empty string = disabled)."""
+    key = api_key or ""
+    if key not in _cache:
+        _cache[key] = LLM(api_key)
+    return _cache[key]
+
+
+def llm_for(db, user) -> LLM:
+    """LLM for the user's organization (respects per-tenant key gating)."""
+    return get_llm(resolve_tenant_key(db, user))

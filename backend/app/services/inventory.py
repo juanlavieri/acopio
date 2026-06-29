@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..auth import audit
 from ..models import Batch, Category, Item, Movement, User
-from .llm import get_llm
+from .llm import get_llm, llm_for
 from .semantic import get_index
 
 # Coarse buckets used across the app.
@@ -63,12 +63,12 @@ def _heuristic_kind(text: str) -> str:
     return best_kind
 
 
-def categorize(db: Session, name: str, description: str = "") -> Category | None:
-    """Return the best-fit Category, using the LLM when available."""
+def categorize(db: Session, name: str, description: str = "", user: User | None = None) -> Category | None:
+    """Return the best-fit Category, using the org's LLM when available."""
     text = f"{name} {description}".strip()
     kind = "other"
 
-    llm = get_llm()
+    llm = llm_for(db, user) if user is not None else get_llm(None)
     if llm.enabled:
         cats = db.query(Category).all()
         catalog = "\n".join(f"- {c.kind}: {c.name} ({c.description})" for c in cats)
@@ -161,7 +161,7 @@ def resolve_or_create_item(
         return existing, False
 
     if category is None:
-        category = categorize(db, name, description)
+        category = categorize(db, name, description, user=user)
     item = Item(
         canonical_name=name or "Unnamed item",
         description=description or "",
@@ -360,9 +360,11 @@ def reindex_missing(db: Session) -> int:
     dedup + semantic search keep working after a redeploy.
     """
     index = get_index()
+    dim = getattr(index._embedder, "dim", 512)  # noqa: SLF001
     missing = 0
     for item in db.query(Item).all():
-        if item.id not in index._vectors:  # noqa: SLF001  (intentional cache check)
+        vec = index._vectors.get(item.id)  # noqa: SLF001
+        if vec is None or len(vec) != dim:  # absent or wrong embedder dimension
             index.upsert(item.id, f"{item.canonical_name}. {item.description}")
             missing += 1
     return missing

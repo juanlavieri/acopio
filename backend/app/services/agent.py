@@ -35,7 +35,7 @@ from .inventory import (
     resolve_or_create_item,
     void_movement,
 )
-from .llm import get_llm
+from .llm import llm_for
 from .semantic import get_index
 
 MAX_STEPS = 6
@@ -571,7 +571,7 @@ When you take an action, briefly state what you did and the resulting stock leve
 def run_agent(
     db: Session, user: User, message: str, history: list[dict] | None = None, center_id: str | None = None
 ) -> dict:
-    llm = get_llm()
+    llm = llm_for(db, user)
     actions: list[dict] = []
 
     if not llm.enabled:

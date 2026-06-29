@@ -393,6 +393,32 @@ check("admin overview has per-org totals", all("totals" in o for o in ov["organi
 check("admin overview global summary", "summary" in ov and "totals" in ov["summary"])
 check("admin overview blocked for country manager", c.get("/api/admin/overview", headers=H(country)).status_code == 403)
 
+# --- per-tenant AI gating (bring-your-own-key) --------------------------
+from app.config import settings as _settings  # noqa: E402
+
+_settings.openai_api_key = "sk-dummy-platform"  # simulate a platform key
+
+def ai_enabled(tok):
+    return c.get("/api/agent/status", headers=H(tok)).json()["ai_enabled"]
+
+check("super admin AI on", ai_enabled(sa) is True)
+check("grandfathered tenant A AI on (platform key)", ai_enabled(country) is True)
+check("new tenant B AI off by default", ai_enabled(bteam) is False)
+
+r = c.post("/api/org/ai-key", headers=H(bteam), json={"api_key": "sk-bteam-own"})
+check("tenant B sets own key -> AI on", r.status_code == 200 and r.json()["ai_enabled"] is True and r.json()["source"] == "own")
+check("status reflects own key", ai_enabled(bteam) is True)
+
+c.post("/api/org/ai-key", headers=H(bteam), json={"api_key": ""})
+check("tenant B clears key -> AI off", ai_enabled(bteam) is False)
+
+r = c.post(f"/api/org/tenants/{b_tenant}/platform-key", headers=H(sa), json={"enabled": True})
+check("super admin grants platform key", r.status_code == 200 and r.json()["tenant"]["use_platform_key"] is True)
+check("tenant B AI on via platform grant", ai_enabled(bteam) is True)
+
+check("volunteer cannot set AI key", c.post("/api/org/ai-key", headers=H(vol), json={"api_key": "x"}).status_code == 403)
+_settings.openai_api_key = None
+
 # --- auth enforced -------------------------------------------------------
 check("auth enforced", c.get("/api/items").status_code == 401)
 

@@ -109,6 +109,64 @@ def list_tenants(db: Session = Depends(get_db), admin: User = Depends(require_su
     return {"tenants": out}
 
 
+def _ai_status(db: Session, user: User) -> dict:
+    from ..config import settings
+    from ..services.llm import resolve_tenant_key
+
+    tenant = db.get(Tenant, user.tenant_id) if user.tenant_id else None
+    enabled = bool(resolve_tenant_key(db, user))
+    if tenant and tenant.openai_api_key:
+        source = "own"
+    elif enabled:
+        source = "platform"
+    else:
+        source = "disabled"
+    return {
+        "ai_enabled": enabled,
+        "source": source,
+        "has_own_key": bool(tenant and tenant.openai_api_key),
+        "use_platform_key": bool(tenant and tenant.use_platform_key),
+        "platform_key_available": bool(settings.openai_api_key),
+    }
+
+
+@router.get("/ai-settings")
+def ai_settings(db: Session = Depends(get_db), user: User = Depends(require_org_manager)):
+    return _ai_status(db, user)
+
+
+class AiKeyIn(BaseModel):
+    api_key: str = ""
+
+
+@router.post("/ai-key")
+def set_ai_key(body: AiKeyIn, db: Session = Depends(get_db), user: User = Depends(require_org_manager)):
+    if user.role != COUNTRY_MANAGER or not user.tenant_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the organization's country manager can set the AI key.")
+    tenant = db.get(Tenant, user.tenant_id)
+    key = (body.api_key or "").strip()
+    tenant.openai_api_key = key or None
+    db.commit()
+    audit(db, user, "org.set_ai_key", "tenant", tenant.id, {"has_own_key": bool(key)})
+    return _ai_status(db, user)
+
+
+class PlatformKeyIn(BaseModel):
+    enabled: bool
+
+
+@router.post("/tenants/{tenant_id}/platform-key")
+def set_platform_key(tenant_id: str, body: PlatformKeyIn, db: Session = Depends(get_db),
+                     admin: User = Depends(require_super_admin)):
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Organization not found.")
+    tenant.use_platform_key = bool(body.enabled)
+    db.commit()
+    audit(db, admin, "org.platform_key", "tenant", tenant.id, {"enabled": tenant.use_platform_key})
+    return {"tenant": tenant.public()}
+
+
 @router.post("/tenants")
 def create_tenant(body: TenantIn, db: Session = Depends(get_db), admin: User = Depends(require_super_admin)):
     if len(body.manager_password) < 8:
@@ -152,6 +210,8 @@ def overview(db: Session = Depends(get_db), user: User = Depends(require_org_man
         "assignable_roles": assignable_roles(user),
         "can_create_regions": level(user.role) >= level(COUNTRY_MANAGER),
         "can_create_centers": level(user.role) >= level(REGIONAL_MANAGER),
+        "is_country_manager": user.role == COUNTRY_MANAGER,
+        "ai": _ai_status(db, user),
     }
 
 

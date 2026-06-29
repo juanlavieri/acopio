@@ -21,15 +21,9 @@ _lock = threading.Lock()
 
 
 def _build_embedder():
-    if settings.ai_enabled:
-        try:
-            from librarian.embeddings.openai_embedder import OpenAIEmbedder
-
-            return OpenAIEmbedder(
-                model=settings.openai_embed_model, api_key=settings.openai_api_key
-            )
-        except Exception:
-            pass
+    # Always use the offline hashing embedder so semantic search/dedup works
+    # identically for every organization, with no API key and a single, stable
+    # vector space (per-tenant generative AI is gated separately).
     from librarian.embeddings.hashing import HashingEmbedder
 
     return HashingEmbedder(dim=512)

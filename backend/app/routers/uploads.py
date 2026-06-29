@@ -58,7 +58,7 @@ async def upload_file(
     # SYNC: build a preview the user can review/edit and then commit.
     if mode == "sync":
         try:
-            preview = preview_sync(db, filename=filename, data=data, center_id=target_center)
+            preview = preview_sync(db, filename=filename, data=data, center_id=target_center, user=user)
         except Exception as e:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Could not process file: {e}")
         upload = Upload(

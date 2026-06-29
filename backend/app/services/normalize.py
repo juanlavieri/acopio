@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Item
 from .inventory import fingerprint, match_item, record_movement, resolve_or_create_item
-from .llm import get_llm
+from .llm import llm_for
 
 # Canonical fields we try to recover from any spreadsheet.
 CANONICAL_FIELDS = ["name", "quantity", "unit", "category", "party", "location", "date", "notes", "barcode"]
@@ -260,11 +260,11 @@ def build_sync_plan(db: Session, *, parsed_rows: list[dict], center_id: str | No
     return plan
 
 
-def preview_sync(db: Session, *, filename: str, data: bytes, center_id: str | None) -> dict:
+def preview_sync(db: Session, *, filename: str, data: bytes, center_id: str | None, user=None) -> dict:
     grids = extract_tables(filename, data)
     if not grids:
         raise ValueError("Could not find any tabular data in this file.")
-    llm = get_llm()
+    llm = llm_for(db, user)
     parsed_rows, mappings_used, _mt = _parse_grids(db, llm=llm, grids=grids, filename=filename)
     plan = build_sync_plan(db, parsed_rows=parsed_rows, center_id=center_id)
     return {"plan": plan, "mappings": mappings_used, "rows": len(parsed_rows)}
@@ -320,7 +320,7 @@ def normalize_upload(
                   item and records only the DIFFERENCE (an adjustment), so
                   re-uploading an updated version never double-counts.
     """
-    llm = get_llm()
+    llm = llm_for(db, user)
     grids = extract_tables(filename, data)
     if not grids:
         raise ValueError("Could not find any tabular data in this file.")

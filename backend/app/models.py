@@ -49,11 +49,17 @@ class Tenant(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: _uuid("tnt"))
     name: Mapped[str] = mapped_column(String, nullable=False)
     country: Mapped[str] = mapped_column(String, default="")
+    # Bring-your-own OpenAI key for this organization (never returned to clients).
+    openai_api_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Whether this org may use the platform's shared OpenAI key (super-admin grant).
+    use_platform_key: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     def public(self, extra: dict | None = None) -> dict:
         d = {"id": self.id, "name": self.name, "country": self.country,
+             "use_platform_key": bool(self.use_platform_key),
+             "has_own_key": bool(self.openai_api_key),
              "created_at": self.created_at.isoformat() if self.created_at else None}
         if extra:
             d.update(extra)

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Building2, Globe2, MapPin, Plus, ShieldCheck, User as UserIcon, Users, X } from "lucide-react";
+import { Building2, Globe2, MapPin, Plus, Sparkles, ShieldCheck, User as UserIcon, Users, X } from "lucide-react";
 import { api } from "../lib/api";
 import { useT } from "../lib/i18n.jsx";
 import { useAuth } from "../lib/auth.jsx";
@@ -56,6 +56,8 @@ function TenantOrg({ me }) {
         </div>
       </div>
 
+      {data.is_country_manager && data.ai && <AiCard ai={data.ai} t={t} onChanged={load} />}
+
       <div className="flex gap-1 rounded-xl bg-slate-100 p-1">
         {tabs.map((tb) => (
           <button key={tb.id} onClick={() => setTab(tb.id)}
@@ -75,6 +77,56 @@ function TenantOrg({ me }) {
       {modal?.type === "user" && <UserModal data={data} t={t} roleName={roleName} onClose={() => setModal(null)} onSaved={refresh} />}
       {modal?.type === "center" && <CenterModal data={data} t={t} onClose={() => setModal(null)} onSaved={refresh} />}
       {modal?.type === "region" && <RegionModal t={t} onClose={() => setModal(null)} onSaved={refresh} />}
+    </div>
+  );
+}
+
+function AiCard({ ai, t, onChanged }) {
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async (clear = false) => {
+    setBusy(true);
+    try {
+      await api.post("/api/org/ai-key", { api_key: clear ? "" : key });
+      setKey("");
+      onChanged();
+    } finally { setBusy(false); }
+  };
+  const srcText = ai.source === "own" ? t("ai.src.own") : ai.source === "platform" ? t("ai.src.platform") : t("ai.src.disabled");
+  return (
+    <div className={`rounded-2xl border p-4 shadow-sm ${ai.ai_enabled ? "border-brand-200 bg-brand-50" : "border-slate-200 bg-white"}`}>
+      <div className="flex items-center gap-2">
+        <span className={`grid h-8 w-8 place-items-center rounded-lg ${ai.ai_enabled ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+          <Sparkles size={16} />
+        </span>
+        <div>
+          <div className="font-semibold text-slate-800">{t("ai.cardTitle")}</div>
+          <div className="text-xs text-slate-500">{ai.ai_enabled ? t("ai.on") : t("ai.off")} · {srcText}</div>
+        </div>
+      </div>
+      {ai.source !== "platform" && (
+        <div className="mt-3 flex flex-wrap items-end gap-2">
+          <label className="flex-1">
+            <span className="mb-1 block text-xs font-medium text-slate-600">{t("ai.keyLabel")}</span>
+            <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="sk-..."
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-500" />
+          </label>
+          <button onClick={() => save(false)} disabled={busy || !key.trim()}
+            className="rounded-lg bg-brand-700 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-800 disabled:opacity-50">
+            {t("ai.saveKey")}
+          </button>
+          {ai.has_own_key && (
+            <button onClick={() => save(true)} disabled={busy}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">
+              {t("ai.removeKey")}
+            </button>
+          )}
+        </div>
+      )}
+      {ai.source !== "platform" && (
+        <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer"
+          className="mt-2 inline-block text-xs text-brand-700 hover:underline">{t("ai.getKey")}</a>
+      )}
     </div>
   );
 }
@@ -377,6 +429,17 @@ function TenantsAdmin() {
                 <span><b className="text-slate-700">{tn.users}</b> {t("ten.users")}</span>
                 <span><b className="text-slate-700">{tn.items}</b> {t("ten.items")}</span>
               </div>
+              <label className="mt-2 flex cursor-pointer items-center justify-between border-t border-slate-100 pt-2 text-xs">
+                <span className="flex items-center gap-1.5 text-slate-600">
+                  <Sparkles size={13} className={tn.use_platform_key || tn.has_own_key ? "text-brand-600" : "text-slate-300"} />
+                  {t("ten.platformAI")}
+                  <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${(tn.use_platform_key || tn.has_own_key) ? "bg-brand-100 text-brand-700" : "bg-slate-100 text-slate-400"}`}>
+                    {(tn.use_platform_key || tn.has_own_key) ? t("ten.aiOn") : t("ten.aiOff")}
+                  </span>
+                </span>
+                <input type="checkbox" checked={!!tn.use_platform_key}
+                  onChange={async (e) => { await api.post(`/api/org/tenants/${tn.id}/platform-key`, { enabled: e.target.checked }); load(); }} />
+              </label>
             </div>
           ))}
         </div>
