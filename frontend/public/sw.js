@@ -3,7 +3,7 @@
    - Navigations fall back to the cached shell when offline.
    - API/auth requests are never cached (always live, write-safe).
 */
-const CACHE = "acopio-v1";
+const CACHE = "acopio-v2";
 const SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {
