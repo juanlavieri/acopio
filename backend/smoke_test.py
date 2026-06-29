@@ -380,6 +380,19 @@ check("super admin sees all tenants' items", "Arroz 1kg" in names_all and "Cobij
 check("country manager cannot create tenants", c.post("/api/org/tenants", headers=H(bteam), json={
     "org_name": "x", "country": "Peru", "manager_name": "y", "manager_email": NEG_EMAIL, "manager_password": "supplies123"}).status_code == 403)
 
+# --- help guide + super admin overview ----------------------------------
+r = c.get("/api/help?lang=es", headers=H(vol))
+check("help guide (es)", r.status_code == 200 and len(r.json()["sections"]) >= 5)
+r = c.get("/api/help?lang=en", headers=H(vol))
+check("help guide (en)", r.status_code == 200 and len(r.json()["sections"]) >= 5)
+
+r = c.get("/api/admin/overview", headers=H(sa))
+check("admin overview (super admin)", r.status_code == 200 and r.json()["tenant_count"] >= 2)
+ov = r.json()
+check("admin overview has per-org totals", all("totals" in o for o in ov["organizations"]))
+check("admin overview global summary", "summary" in ov and "totals" in ov["summary"])
+check("admin overview blocked for country manager", c.get("/api/admin/overview", headers=H(country)).status_code == 403)
+
 # --- auth enforced -------------------------------------------------------
 check("auth enforced", c.get("/api/items").status_code == 401)
 

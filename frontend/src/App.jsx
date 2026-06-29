@@ -8,6 +8,7 @@ import {
   Building2,
   Bell,
   ClipboardList,
+  HelpCircle,
   Sparkles,
   LogOut,
   KeyRound,
@@ -28,6 +29,7 @@ import Activity from "./pages/Activity.jsx";
 import Organization from "./pages/Organization.jsx";
 import Alerts from "./pages/Alerts.jsx";
 import Needs from "./pages/Needs.jsx";
+import Help from "./pages/Help.jsx";
 import Assistant from "./components/Assistant.jsx";
 
 function NavItem({ to, icon: Icon, label, onClick }) {
@@ -136,6 +138,7 @@ export default function App() {
         {canManageOrg && (
           <NavItem to="/organization" icon={Building2} label={t("nav.organization")} onClick={() => setMobileNav(false)} />
         )}
+        <NavItem to="/help" icon={HelpCircle} label={t("nav.help")} onClick={() => setMobileNav(false)} />
       </nav>
 
       <button
@@ -226,6 +229,7 @@ export default function App() {
             <Route path="/upload" element={<Upload />} />
             <Route path="/activity" element={<Activity />} />
             <Route path="/organization" element={canManageOrg ? <Organization /> : <Navigate to="/" />} />
+            <Route path="/help" element={<Help />} />
             <Route path="*" element={<Navigate to="/" />} />
           </Routes>
         </main>

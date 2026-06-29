@@ -17,9 +17,17 @@ import { api } from "../lib/api";
 import { fmtNum, fmtDate, kindColor } from "../lib/ui";
 import { useT } from "../lib/i18n.jsx";
 import { useScope } from "../lib/scope.jsx";
+import { useAuth } from "../lib/auth.jsx";
 import { printReport } from "../lib/print";
+import AdminDashboard from "./AdminDashboard.jsx";
 
 export default function Dashboard() {
+  const { user } = useAuth();
+  if (user?.role === "super_admin") return <AdminDashboard />;
+  return <TenantDashboard />;
+}
+
+function TenantDashboard() {
   const { t, kindName, lang } = useT();
   const { viewCenter, centers } = useScope();
   const [data, setData] = useState(null);

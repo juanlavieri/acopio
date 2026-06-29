@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .db import init_db
-from .routers import agent, auth, dashboard, export, inventory, needs, org, uploads, voice
+from .routers import admin, agent, auth, dashboard, export, help, inventory, needs, org, uploads, voice
 
 app = FastAPI(title="Acopio", version="1.0.0")
 
@@ -49,6 +49,8 @@ def healthz():
 # API routers
 app.include_router(auth.router)
 app.include_router(org.router)
+app.include_router(admin.router)
+app.include_router(help.router)
 app.include_router(inventory.router)
 app.include_router(uploads.router)
 app.include_router(dashboard.router)

@@ -520,7 +520,10 @@ def _run_query(db: Session, sql: str) -> dict:
 
 # --- main loop -----------------------------------------------------------
 def _system_prompt(user: User, db: Session, center_id: str | None) -> str:
+    from ..help import help_for_agent
     from ..models import Center
+
+    _help_block = help_for_agent()
 
     tables = db.query(CustomTable).all()
     fields = db.query(CustomField).filter_by(entity="item").all()
@@ -558,6 +561,9 @@ questions. When a user dictates an intake or dispatch, call record_stock (type '
 include the note and party). Only the centers above are yours; do not report on others.
 
 {SCHEMA_DOC}{extra}
+
+If the user asks how to do something or seems stuck, guide them using this:
+{_help_block}
 
 When you take an action, briefly state what you did and the resulting stock level."""
 
