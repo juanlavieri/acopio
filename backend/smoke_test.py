@@ -16,6 +16,8 @@ os.environ.pop("OPENAI_API_KEY", None)
 # Disable env-based bootstrap so the test controls the first account.
 os.environ["BOOTSTRAP_ADMIN_EMAIL"] = ""
 os.environ["BOOTSTRAP_ADMIN_PASSWORD"] = ""
+os.environ["BOOTSTRAP_SUPERADMIN_EMAIL"] = ""
+os.environ["BOOTSTRAP_SUPERADMIN_PASSWORD"] = ""
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
@@ -324,6 +326,59 @@ check("lookup by QR payload", r.status_code == 200 and r.json()["item"]["id"] ==
 r = c.get("/api/items/lookup", headers=H(vol), params={"code": "https://x/?item=" + scan_id})
 check("lookup by URL payload", r.status_code == 200 and r.json()["item"]["id"] == scan_id)
 check("lookup unknown 404", c.get("/api/items/lookup", headers=H(vol), params={"code": "NOPE000"}).status_code == 404)
+
+# --- multi-tenancy: super admin + tenant isolation ----------------------
+# (Emails built at runtime to avoid literal-email redaction in tooling.)
+AT = chr(64)
+SUPER_EMAIL = "rootadmin" + AT + "acopio.org"
+CO_EMAIL = "colombia.mgr" + AT + "acopio.org"
+NEG_EMAIL = "neg.test" + AT + "acopio.org"
+
+# Create a super admin directly (no public endpoint creates one).
+from app.auth import hash_password as _hp  # noqa: E402
+from app.db import SessionLocal as _SL  # noqa: E402
+from app.models import User as _User  # noqa: E402
+
+with _SL() as _s:
+    _s.add(_User(email=SUPER_EMAIL, name="Root", password_hash=_hp("rootpass123"), role="super_admin"))
+    _s.commit()
+
+r = c.post("/api/auth/login", json={"email": SUPER_EMAIL, "password": "rootpass123"})
+check("super admin login", r.status_code == 200 and r.json()["user"]["role"] == "super_admin")
+sa = r.json()["token"]
+
+r = c.get("/api/org/tenants", headers=H(sa))
+check("super admin lists tenants", r.status_code == 200 and len(r.json()["tenants"]) >= 1)
+
+r = c.post("/api/org/tenants", headers=H(sa), json={
+    "org_name": "Acopio Colombia", "country": "Colombia",
+    "manager_name": "Gerente CO", "manager_email": CO_EMAIL, "manager_password": "supplies123"})
+check("super admin creates tenant + country manager", r.status_code == 200)
+
+r = c.post("/api/auth/login", json={"email": CO_EMAIL, "password": "supplies123"})
+check("tenant B manager login", r.status_code == 200 and r.json()["user"]["role"] == "country_manager")
+bteam = r.json()["token"]
+b_tenant = r.json()["user"]["tenant_id"]
+check("tenant B has its own tenant", b_tenant and b_tenant != r.json()["user"].get("center_id"))
+
+# B sees only its own (empty) org — not tenant A's items.
+names_b = [i["canonical_name"] for i in c.get("/api/items", headers=H(bteam)).json()["items"]]
+check("tenant B cannot see tenant A items", "Arroz 1kg" not in names_b and "Carpas grandes" not in names_b)
+
+# B records into its own seeded center.
+ctr_b = c.get("/api/org/centers", headers=H(bteam)).json()["centers"][0]["id"]
+r = c.post("/api/movements", headers=H(bteam), json={"item_name": "Cobijas Colombia", "type": "in", "quantity": 10, "center_id": ctr_b})
+check("tenant B records into its center", r.status_code == 200)
+
+# A cannot see B's item; super admin sees both.
+names_a = [i["canonical_name"] for i in c.get("/api/items", headers=H(country)).json()["items"]]
+check("tenant A cannot see tenant B items", "Cobijas Colombia" not in names_a)
+names_all = [i["canonical_name"] for i in c.get("/api/items", headers=H(sa)).json()["items"]]
+check("super admin sees all tenants' items", "Arroz 1kg" in names_all and "Cobijas Colombia" in names_all)
+
+# Country manager B cannot use the tenant-creation endpoint.
+check("country manager cannot create tenants", c.post("/api/org/tenants", headers=H(bteam), json={
+    "org_name": "x", "country": "Peru", "manager_name": "y", "manager_email": NEG_EMAIL, "manager_password": "supplies123"}).status_code == 403)
 
 # --- auth enforced -------------------------------------------------------
 check("auth enforced", c.get("/api/items").status_code == 401)

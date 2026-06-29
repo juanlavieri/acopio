@@ -1,33 +1,44 @@
-"""Role hierarchy + scoping rules.
+"""Role hierarchy + multi-tenant scoping.
 
 Hierarchy (high → low):
-    country_manager  → manages everything
+    super_admin      → manages ALL tenants (organizations)
+    country_manager  → owns ONE tenant; manages everything inside it
     regional_manager → manages centers + people in their region
     center_manager   → manages volunteers in their center
     volunteer        → records stock at their center
 
-A user can manage any user/role strictly below them, within their scope.
-Inventory is tracked per collection center; a viewer sees only the centers in
-their scope (a country manager sees them all).
+Each tenant (organization) is isolated: a country manager and everyone below
+them only see their own tenant's regions, centers, people and inventory. The
+super admin sees everything and provisions country managers.
 """
 from __future__ import annotations
 
 from sqlalchemy import false
 from sqlalchemy.orm import Session
 
-from .models import Center, User
+from .models import Center, Region, User
 
+SUPER_ADMIN = "super_admin"
 COUNTRY_MANAGER = "country_manager"
 REGIONAL_MANAGER = "regional_manager"
 CENTER_MANAGER = "center_manager"
 VOLUNTEER = "volunteer"
 
-ROLE_LEVEL = {VOLUNTEER: 0, CENTER_MANAGER: 1, REGIONAL_MANAGER: 2, COUNTRY_MANAGER: 3}
-ROLES = [COUNTRY_MANAGER, REGIONAL_MANAGER, CENTER_MANAGER, VOLUNTEER]
+ROLE_LEVEL = {VOLUNTEER: 0, CENTER_MANAGER: 1, REGIONAL_MANAGER: 2, COUNTRY_MANAGER: 3, SUPER_ADMIN: 4}
+ROLES = [SUPER_ADMIN, COUNTRY_MANAGER, REGIONAL_MANAGER, CENTER_MANAGER, VOLUNTEER]
 
 
 def level(role: str) -> int:
     return ROLE_LEVEL.get(role, 0)
+
+
+def tenant_center_ids(db: Session, tenant_id: str | None) -> set[str]:
+    if not tenant_id:
+        return set()
+    region_ids = [r.id for r in db.query(Region.id).filter(Region.tenant_id == tenant_id).all()]
+    if not region_ids:
+        return set()
+    return {c.id for c in db.query(Center.id).filter(Center.region_id.in_(region_ids)).all()}
 
 
 def region_of_user(db: Session, user: User) -> str | None:
@@ -40,9 +51,11 @@ def region_of_user(db: Session, user: User) -> str | None:
 
 
 def visible_center_ids(db: Session, user: User) -> set[str] | None:
-    """Center ids the user can see. None == all centers (country manager)."""
-    if user.role == COUNTRY_MANAGER:
+    """Center ids the user can see. None == all centers (super admin only)."""
+    if user.role == SUPER_ADMIN:
         return None
+    if user.role == COUNTRY_MANAGER:
+        return tenant_center_ids(db, user.tenant_id)
     if user.role == REGIONAL_MANAGER:
         if not user.region_id:
             return set()
@@ -51,8 +64,12 @@ def visible_center_ids(db: Session, user: User) -> set[str] | None:
 
 
 def visible_region_ids(db: Session, user: User) -> set[str] | None:
-    if user.role == COUNTRY_MANAGER:
+    if user.role == SUPER_ADMIN:
         return None
+    if user.role == COUNTRY_MANAGER:
+        if not user.tenant_id:
+            return set()
+        return {r.id for r in db.query(Region.id).filter(Region.tenant_id == user.tenant_id).all()}
     if user.role == REGIONAL_MANAGER:
         return {user.region_id} if user.region_id else set()
     r = region_of_user(db, user)
@@ -69,12 +86,14 @@ def scope_query_by_center(query, model, center_ids: set[str] | None):
 
 
 def user_in_scope(db: Session, actor: User, target: User) -> bool:
-    if actor.role == COUNTRY_MANAGER:
+    if actor.role == SUPER_ADMIN:
         return True
+    if actor.role == COUNTRY_MANAGER:
+        return bool(actor.tenant_id) and target.tenant_id == actor.tenant_id
     if actor.role == REGIONAL_MANAGER:
-        return region_of_user(db, target) == actor.region_id and actor.region_id is not None
+        return bool(actor.region_id) and region_of_user(db, target) == actor.region_id
     if actor.role == CENTER_MANAGER:
-        return target.center_id == actor.center_id and actor.center_id is not None
+        return bool(actor.center_id) and target.center_id == actor.center_id
     return False
 
 
@@ -87,21 +106,17 @@ def can_manage_user(db: Session, actor: User, target: User) -> bool:
 
 
 def assignable_roles(actor: User) -> list[str]:
-    """Roles an actor is allowed to assign (strictly below their own)."""
-    return [r for r in ROLES if level(r) < level(actor.role)]
+    """Roles an actor may assign. Country managers are created by the super
+    admin through the tenant flow, so they are not offered here for others."""
+    return [r for r in ROLES if level(r) < level(actor.role) and r != SUPER_ADMIN]
 
 
 def can_manage_org(user: User) -> bool:
-    """Whether the user can manage any people/regions/centers."""
     return level(user.role) >= ROLE_LEVEL[CENTER_MANAGER]
 
 
 def resolve_target_center(db: Session, user: User, center_id_param: str | None) -> str:
-    """Pick the center an action applies to, enforcing scope.
-
-    Center-scoped users (volunteer / center_manager) always act on their own
-    center. Higher managers must specify a center within their scope.
-    """
+    """Pick the center an action applies to, enforcing scope."""
     if user.center_id:
         return user.center_id
     vis = visible_center_ids(db, user)

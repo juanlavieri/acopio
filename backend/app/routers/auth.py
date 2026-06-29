@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
+
+from ..validators import EmailField
 
 from ..auth import (
     audit,
@@ -14,20 +16,20 @@ from ..auth import (
     verify_password,
 )
 from ..db import get_db
-from ..models import SessionToken, User
+from ..models import SessionToken, Tenant, User
 from ..scope import COUNTRY_MANAGER
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 class RegisterIn(BaseModel):
-    email: EmailStr
+    email: EmailField
     name: str
     password: str
 
 
 class LoginIn(BaseModel):
-    email: EmailStr
+    email: EmailField
     password: str
 
 
@@ -47,11 +49,18 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Password must be at least 8 characters.")
 
     email = body.email.lower().strip()
+    # The bootstrap account owns the seeded tenant (or a new one).
+    tenant = db.query(Tenant).order_by(Tenant.created_at).first()
+    if not tenant:
+        tenant = Tenant(name=email.split("@")[0], country="")
+        db.add(tenant)
+        db.flush()
     user = User(
         email=email,
         name=body.name.strip() or email,
         password_hash=hash_password(body.password),
         role=COUNTRY_MANAGER,
+        tenant_id=tenant.id,
     )
     db.add(user)
     db.commit()

@@ -1,27 +1,36 @@
-"""Organization management: regions, centers, and the user hierarchy.
+"""Organization & tenant management.
 
-All operations are scoped: a manager can only see/manage regions, centers and
-users within their slice of the org, and can only assign roles strictly below
-their own.
+- Super admin: create/list tenants (each tenant = one country manager's org).
+- Country manager and below: manage regions, centers and people inside their
+  own tenant only. All reads/writes are scoped.
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from ..auth import audit, get_current_user, hash_password, require_country_manager, require_org_manager
+from ..validators import EmailField
+
+from ..auth import (
+    audit,
+    get_current_user,
+    hash_password,
+    require_org_manager,
+    require_super_admin,
+)
 from ..db import get_db
-from ..models import Center, Region, User
+from ..models import Center, Item, Region, Tenant, User
 from ..scope import (
     CENTER_MANAGER,
     COUNTRY_MANAGER,
     REGIONAL_MANAGER,
+    SUPER_ADMIN,
     VOLUNTEER,
     assignable_roles,
     can_manage_user,
     level,
-    region_of_user,
+    tenant_center_ids,
     visible_center_ids,
     visible_region_ids,
 )
@@ -70,43 +79,78 @@ def _assert_center_in_scope(db: Session, actor: User, center_id: str) -> Center:
     return center
 
 
-# --- selectors / overview ------------------------------------------------
+# --- selectors -----------------------------------------------------------
 @router.get("/centers")
 def my_centers(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Centers visible to the current user (drives the scope selector)."""
     return {"centers": [c.public() for c in _visible_centers(db, user)]}
 
 
+# --- super admin: tenants -----------------------------------------------
+class TenantIn(BaseModel):
+    org_name: str
+    country: str
+    manager_name: str
+    manager_email: EmailField
+    manager_password: str
+
+
+@router.get("/tenants")
+def list_tenants(db: Session = Depends(get_db), admin: User = Depends(require_super_admin)):
+    out = []
+    for tnt in db.query(Tenant).order_by(Tenant.created_at.desc()).all():
+        managers = db.query(User).filter(User.tenant_id == tnt.id, User.role == COUNTRY_MANAGER).all()
+        center_ids = tenant_center_ids(db, tnt.id)
+        users = db.query(User).filter(User.tenant_id == tnt.id).count()
+        items = db.query(Item).filter(Item.center_id.in_(center_ids)).count() if center_ids else 0
+        out.append(tnt.public(extra={
+            "managers": [{"id": m.id, "name": m.name, "email": m.email, "active": m.active} for m in managers],
+            "centers": len(center_ids), "users": users, "items": items,
+        }))
+    return {"tenants": out}
+
+
+@router.post("/tenants")
+def create_tenant(body: TenantIn, db: Session = Depends(get_db), admin: User = Depends(require_super_admin)):
+    if len(body.manager_password) < 8:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Password must be at least 8 characters.")
+    email = body.manager_email.lower().strip()
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(status.HTTP_409_CONFLICT, "An account with that email already exists.")
+
+    tenant = Tenant(name=body.org_name.strip(), country=body.country.strip(), created_by=admin.id)
+    db.add(tenant)
+    db.flush()
+    region = Region(name=body.country.strip() or body.org_name.strip(), country=body.country.strip(), tenant_id=tenant.id, created_by=admin.id)
+    db.add(region)
+    db.flush()
+    db.add(Center(name="Centro Principal", region_id=region.id, location=body.country.strip(), created_by=admin.id))
+    manager = User(
+        email=email, name=body.manager_name.strip() or email,
+        password_hash=hash_password(body.manager_password), role=COUNTRY_MANAGER, tenant_id=tenant.id,
+    )
+    db.add(manager)
+    db.commit()
+    db.refresh(tenant)
+    db.refresh(manager)
+    audit(db, admin, "org.create_tenant", "tenant", tenant.id, {"country": tenant.country, "manager": email})
+    return {"tenant": tenant.public(), "manager": manager.public()}
+
+
+# --- overview (managers within a tenant) --------------------------------
 @router.get("/overview")
 def overview(db: Session = Depends(get_db), user: User = Depends(require_org_manager)):
     regions = _visible_regions(db, user)
     centers = _visible_centers(db, user)
-    center_ids = visible_center_ids(db, user)
-
-    users_q = db.query(User)
-    if center_ids is not None:
-        # Show users whose center OR region falls in scope, plus same-region managers.
-        region_ids = visible_region_ids(db, user) or set()
-        cond_ids = list(center_ids) if center_ids else []
-        users = [
-            u
-            for u in users_q.all()
-            if (u.center_id in center_ids if center_ids else False)
-            or (u.region_id in region_ids if region_ids else False)
-        ]
-    else:
-        users = users_q.all()
-
+    people = [u for u in db.query(User).all() if can_manage_user(db, user, u)]
     centers_by_region: dict[str, int] = {}
     for c in db.query(Center).all():
         centers_by_region[c.region_id] = centers_by_region.get(c.region_id, 0) + 1
-
     return {
         "regions": [r.public(centers=centers_by_region.get(r.id, 0)) for r in regions],
         "centers": [c.public() for c in centers],
-        "users": [u.public() for u in users if u.id != user.id] + [user.public()],
+        "users": [u.public() for u in people] + [user.public()],
         "assignable_roles": assignable_roles(user),
-        "can_create_regions": user.role == COUNTRY_MANAGER,
+        "can_create_regions": level(user.role) >= level(COUNTRY_MANAGER),
         "can_create_centers": level(user.role) >= level(REGIONAL_MANAGER),
     }
 
@@ -114,13 +158,16 @@ def overview(db: Session = Depends(get_db), user: User = Depends(require_org_man
 # --- regions -------------------------------------------------------------
 class RegionIn(BaseModel):
     name: str
-    country: str = "Venezuela"
+    country: str = ""
 
 
 @router.post("/regions")
-def create_region(body: RegionIn, db: Session = Depends(get_db),
-                  user: User = Depends(require_country_manager)):
-    region = Region(name=body.name.strip(), country=body.country.strip() or "Venezuela", created_by=user.id)
+def create_region(body: RegionIn, db: Session = Depends(get_db), user: User = Depends(require_org_manager)):
+    if user.role != COUNTRY_MANAGER or not user.tenant_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a country manager can create regions in their organization.")
+    tenant = db.get(Tenant, user.tenant_id)
+    region = Region(name=body.name.strip(), country=(body.country.strip() or (tenant.country if tenant else "")),
+                    tenant_id=user.tenant_id, created_by=user.id)
     db.add(region)
     db.commit()
     db.refresh(region)
@@ -136,8 +183,7 @@ class CenterIn(BaseModel):
 
 
 @router.post("/centers")
-def create_center(body: CenterIn, db: Session = Depends(get_db),
-                  user: User = Depends(require_org_manager)):
+def create_center(body: CenterIn, db: Session = Depends(get_db), user: User = Depends(require_org_manager)):
     if level(user.role) < level(REGIONAL_MANAGER):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only regional managers and above can create centers.")
     _assert_region_in_scope(db, user, body.region_id)
@@ -149,9 +195,9 @@ def create_center(body: CenterIn, db: Session = Depends(get_db),
     return {"center": center.public()}
 
 
-# --- users ---------------------------------------------------------------
+# --- users (within a tenant) --------------------------------------------
 class CreateUserIn(BaseModel):
-    email: EmailStr
+    email: EmailField
     name: str
     password: str
     role: str
@@ -166,8 +212,9 @@ def list_users(db: Session = Depends(get_db), user: User = Depends(require_org_m
 
 
 @router.post("/users")
-def create_user(body: CreateUserIn, db: Session = Depends(get_db),
-                user: User = Depends(require_org_manager)):
+def create_user(body: CreateUserIn, db: Session = Depends(get_db), user: User = Depends(require_org_manager)):
+    if not user.tenant_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Use tenant management to create country managers.")
     if body.role not in assignable_roles(user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "You cannot assign that role.")
     if len(body.password) < 8:
@@ -178,7 +225,6 @@ def create_user(body: CreateUserIn, db: Session = Depends(get_db),
 
     region_id = body.region_id
     center_id = body.center_id
-
     if body.role == REGIONAL_MANAGER:
         if not region_id:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Regional managers need a region.")
@@ -189,16 +235,12 @@ def create_user(body: CreateUserIn, db: Session = Depends(get_db),
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "This role needs a center.")
         center = _assert_center_in_scope(db, user, center_id)
         region_id = center.region_id
-    else:  # country_manager — never assignable here (only bootstrap)
+    else:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid role.")
 
     new_user = User(
-        email=email,
-        name=body.name.strip() or email,
-        password_hash=hash_password(body.password),
-        role=body.role,
-        region_id=region_id,
-        center_id=center_id,
+        email=email, name=body.name.strip() or email, password_hash=hash_password(body.password),
+        role=body.role, tenant_id=user.tenant_id, region_id=region_id, center_id=center_id,
     )
     db.add(new_user)
     db.commit()

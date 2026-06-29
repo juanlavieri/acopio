@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
-import { Building2, MapPin, Plus, ShieldCheck, User as UserIcon, Users, X } from "lucide-react";
+import { Building2, Globe2, MapPin, Plus, ShieldCheck, User as UserIcon, Users, X } from "lucide-react";
 import { api } from "../lib/api";
 import { useT } from "../lib/i18n.jsx";
 import { useAuth } from "../lib/auth.jsx";
+import { COUNTRIES } from "../lib/countries";
 
 export default function Organization() {
-  const { t, roleName } = useT();
   const { user: me } = useAuth();
+  if (me.role === "super_admin") return <TenantsAdmin />;
+  return <TenantOrg me={me} />;
+}
+
+function TenantOrg({ me }) {
+  const { t, roleName } = useT();
   const [data, setData] = useState(null);
   const [tab, setTab] = useState("people");
   const [modal, setModal] = useState(null);
@@ -324,4 +330,104 @@ function RegionModal({ t, onClose, onSaved }) {
 
 function Empty({ children }) {
   return <div className="grid h-40 place-items-center rounded-2xl border border-dashed border-slate-300 text-center text-sm text-slate-400">{children}</div>;
+}
+
+// --- Super admin: tenants (organizations) -------------------------------
+function TenantsAdmin() {
+  const { t } = useT();
+  const [tenants, setTenants] = useState(null);
+  const [modal, setModal] = useState(false);
+  const load = () => api.get("/api/org/tenants").then((d) => setTenants(d.tenants));
+  useEffect(() => { load(); }, []);
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800">{t("ten.title")}</h1>
+          <p className="text-sm text-slate-500">{t("ten.subtitle")}</p>
+        </div>
+        <AddBtn onClick={() => setModal(true)} label={t("ten.add")} />
+      </div>
+
+      {!tenants ? (
+        <div className="text-slate-400">{t("common.loading")}</div>
+      ) : tenants.length === 0 ? (
+        <Empty>{t("ten.empty")}</Empty>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {tenants.map((tn) => (
+            <div key={tn.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center gap-2">
+                <span className="grid h-9 w-9 place-items-center rounded-lg bg-brand-50 text-brand-700"><Globe2 size={18} /></span>
+                <div className="min-w-0">
+                  <div className="truncate font-semibold text-slate-800">{tn.name}</div>
+                  <div className="text-xs text-slate-400">{tn.country}</div>
+                </div>
+              </div>
+              <div className="mt-3 text-sm text-slate-600">
+                {(tn.managers || []).map((m) => (
+                  <div key={m.id} className="flex items-center gap-1.5 text-xs">
+                    <ShieldCheck size={13} className="text-brand-600" /> {m.name} · <span className="text-slate-400">{m.email}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 flex gap-3 border-t border-slate-100 pt-2 text-xs text-slate-500">
+                <span><b className="text-slate-700">{tn.centers}</b> {t("ten.centers")}</span>
+                <span><b className="text-slate-700">{tn.users}</b> {t("ten.users")}</span>
+                <span><b className="text-slate-700">{tn.items}</b> {t("ten.items")}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {modal && <AddTenantModal t={t} onClose={() => setModal(false)} onSaved={() => { setModal(false); load(); }} />}
+    </div>
+  );
+}
+
+function AddTenantModal({ t, onClose, onSaved }) {
+  const [orgName, setOrgName] = useState("");
+  const [country, setCountry] = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const save = async () => {
+    setError("");
+    if (!orgName.trim() || !country || !name.trim() || !email.trim() || password.length < 8) {
+      setError(t("login.passwordHint"));
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.post("/api/org/tenants", {
+        org_name: orgName, country, manager_name: name, manager_email: email, manager_password: password,
+      });
+      onSaved();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <ModalShell title={t("ten.add")} onClose={onClose}>
+      <div className="space-y-3">
+        <Field label={t("ten.country")}>
+          <select value={country} onChange={(e) => setCountry(e.target.value)} className={inputCls}>
+            <option value="">{t("ten.selectCountry")}</option>
+            {COUNTRIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label={t("ten.orgName")}><input className={inputCls} value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="Acopio Curaçao" /></Field>
+        <div className="border-t border-slate-100 pt-2 text-xs font-semibold uppercase text-slate-400">{t("ten.manager")}</div>
+        <Field label={t("ten.managerName")}><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
+        <Field label={t("ten.managerEmail")}><input type="email" className={inputCls} value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
+        <Field label={t("ten.managerPassword")}><input type="password" className={inputCls} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={t("login.passwordHint")} /></Field>
+        {error && <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>}
+        <button onClick={save} disabled={busy} className="w-full rounded-xl bg-brand-700 py-2.5 font-semibold text-white hover:bg-brand-800 disabled:opacity-60">
+          {busy ? t("login.pleaseWait") : t("ten.create")}
+        </button>
+      </div>
+    </ModalShell>
+  );
 }

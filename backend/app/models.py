@@ -40,17 +40,39 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class Tenant(Base):
+    """An organization (tenant). Each country manager owns one; all of their
+    regions, centers, people and inventory live under it, isolated from others."""
+
+    __tablename__ = "tenants"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: _uuid("tnt"))
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    country: Mapped[str] = mapped_column(String, default="")
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    def public(self, extra: dict | None = None) -> dict:
+        d = {"id": self.id, "name": self.name, "country": self.country,
+             "created_at": self.created_at.isoformat() if self.created_at else None}
+        if extra:
+            d.update(extra)
+        return d
+
+
 class Region(Base):
     __tablename__ = "regions"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: _uuid("reg"))
     name: Mapped[str] = mapped_column(String, nullable=False)
     country: Mapped[str] = mapped_column(String, default="Venezuela")
+    tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), nullable=True, index=True)
     created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     def public(self, centers: int | None = None) -> dict:
-        return {"id": self.id, "name": self.name, "country": self.country, "centers": centers}
+        return {"id": self.id, "name": self.name, "country": self.country,
+                "tenant_id": self.tenant_id, "centers": centers}
 
 
 class Center(Base):
@@ -87,8 +109,10 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
-    # Role hierarchy: country_manager > regional_manager > center_manager > volunteer
+    # Role hierarchy: super_admin > country_manager > regional_manager > center_manager > volunteer
     role: Mapped[str] = mapped_column(String, default="volunteer")
+    # Tenant (organization) this user belongs to. Null only for super_admin.
+    tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), nullable=True, index=True)
     # Scope: managers are scoped to a region/center; volunteers to a center.
     region_id: Mapped[str | None] = mapped_column(ForeignKey("regions.id"), nullable=True, index=True)
     center_id: Mapped[str | None] = mapped_column(ForeignKey("centers.id"), nullable=True, index=True)
@@ -97,6 +121,7 @@ class User(Base):
 
     region: Mapped[Region | None] = relationship("Region", foreign_keys=[region_id])
     center: Mapped[Center | None] = relationship("Center", foreign_keys=[center_id])
+    tenant: Mapped[Tenant | None] = relationship("Tenant", foreign_keys=[tenant_id])
 
     def public(self) -> dict:
         return {
@@ -104,6 +129,8 @@ class User(Base):
             "email": self.email,
             "name": self.name,
             "role": self.role,
+            "tenant_id": self.tenant_id,
+            "tenant": self.tenant.name if self.tenant else None,
             "region_id": self.region_id,
             "region": self.region.name if self.region else None,
             "center_id": self.center_id,

@@ -40,6 +40,13 @@ services:
         sync: false
       - key: BOOTSTRAP_ADMIN_PASSWORD
         sync: false
+      # Optional super admin (manages all tenants). Set in the dashboard.
+      - key: BOOTSTRAP_SUPERADMIN_EMAIL
+        sync: false
+      - key: BOOTSTRAP_SUPERADMIN_NAME
+        sync: false
+      - key: BOOTSTRAP_SUPERADMIN_PASSWORD
+        sync: false
       # Postgres connection string, injected from the managed database above.
       - key: DATABASE_URL
         fromDatabase:

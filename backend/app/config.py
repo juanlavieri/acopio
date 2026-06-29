@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     bootstrap_admin_name: str | None = None
     bootstrap_admin_password: str | None = None
 
+    # Optional super-admin bootstrap (top of the hierarchy; manages all tenants).
+    bootstrap_superadmin_email: str | None = None
+    bootstrap_superadmin_name: str | None = None
+    bootstrap_superadmin_password: str | None = None
+
     # Seed region/center for the operation (the collection-center country).
     default_country: str = "Venezuela"
     default_region: str = "Nacional"

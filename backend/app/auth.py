@@ -127,8 +127,16 @@ def require_org_manager(user: User = Depends(get_current_user)) -> User:
 
 
 def require_country_manager(user: User = Depends(get_current_user)) -> User:
-    from .scope import COUNTRY_MANAGER
+    from .scope import COUNTRY_MANAGER, SUPER_ADMIN
 
-    if user.role != COUNTRY_MANAGER:
+    if user.role not in (COUNTRY_MANAGER, SUPER_ADMIN):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Country manager privileges required")
+    return user
+
+
+def require_super_admin(user: User = Depends(get_current_user)) -> User:
+    from .scope import SUPER_ADMIN
+
+    if user.role != SUPER_ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super admin privileges required")
     return user
